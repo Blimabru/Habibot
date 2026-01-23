@@ -1,29 +1,40 @@
 # UTF-8
+# Arquivo de version info do Windows para PyInstaller (--version-file)
+# Referência: https://pyinstaller.org/
+
 VSVersionInfo(
+  # Bloco principal de informações de versão do executável
   ffi=FixedFileInfo(
-    filevers=(1, 1, 0, 0),
-    prodvers=(1, 1, 0, 0),
-    mask=0x3f,
-    flags=0x0,
-    OS=0x40004,
-    fileType=0x1,
-    subtype=0x0,
-    date=(0, 0)
+    filevers=(1, 1, 0, 0),         # Versão do arquivo (major, minor, patch)
+    prodvers=(1, 1, 0, 0),         # Versão do produto (major, minor, patch)
+    mask=0x3F,                     # Máscara de campos válidos
+    flags=0x0,                     # Flags de status
+    OS=0x40004,                    # Tipo de sistema operacional (Windows NT 32-bit)
+    fileType=0x1,                  # Tipo de arquivo (aplicativo)
+    subtype=0x0,                   # Subtipo (não usado)
+    date=(0, 0)                    # Data (não usado)
   ),
   kids=[
     StringFileInfo(
       [
-      StringTable(
-        u'040904B0',
-        [StringStruct(u'CompanyName', u'Bruno Lima'),
-        StringStruct(u'FileDescription', u'Bot de Automação Habibot'),
-        StringStruct(u'FileVersion', u'1.1.0'),
-        StringStruct(u'InternalName', u'Habibot'),
-        StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Bruno Lima'),
-        StringStruct(u'OriginalFilename', u'Habibot.exe'),
-        StringStruct(u'ProductName', u'Habibot'),
-        StringStruct(u'ProductVersion', u'1.1.0')])
-      ]),
-    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+        StringTable(
+          '041604B0',
+          [
+            # Metadados exibidos nas propriedades do executável
+            StringStruct('CompanyName', 'Bruno Lima'),  # Nome do autor/empresa
+            StringStruct('FileDescription', 'Este bot de automação foi criado para suprir a necessidade de um relatório completo no Sistema de Habitação que disponibilize todos os dados dos candidatos cadastrados.'),
+            StringStruct('FileVersion', '1.1.0'),        # Versão do arquivo
+            StringStruct('InternalName', 'Habibot'), # Nome interno
+            StringStruct('LegalCopyright', '© 2026 Bruno Lima'),
+            StringStruct('OriginalFilename', 'Habibot.exe'), # Nome do arquivo gerado
+            StringStruct('ProductName', 'Bot de Automação Habibot'), # Nome do produto
+            StringStruct('ProductVersion', '1.1.0'),     # Versão do produto
+            StringStruct('Comments', 'Idioma: Português Brasileiro') # Comentários adicionais
+          ]
+        )
+      ]
+    ),
+    # Informação de localização (idioma e codepage)
+    VarFileInfo([VarStruct('Translation', [0x0416, 1200])])
   ]
 )

@@ -5,7 +5,7 @@ Relatório/*.xlsx
 Relatório/*.xls
 
 # Saída do bot
-Extração de Dados/
+Habibot - Dados Extraídos/*
 
 # Arquivos de debug
 _debug/*.png
@@ -39,6 +39,7 @@ chromedriver.log
 # Sistema
 .DS_Store
 Thumbs.db
+sistema/*
 
 # Driver
 assets/drivers/chromedriver.exe
@@ -49,3 +50,4 @@ assets/images/icons/*
 
 # Logs
 *.log
+debug/*

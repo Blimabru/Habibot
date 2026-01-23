@@ -1,36 +1,42 @@
 # 🤖 Bot de Automação Habibot
 
-> 🔄 Versão **v1.0.0**
+> 🔄 Versão **v1.1.0**
 
 Bot para extração automatizada de **TODOS** os dados de candidatos do sistema Habibot com exportação para Excel.
 
 ## ✨ Funcionalidades
 
 ### 📊 Extração Completa
-- ✅ **Paginação automática** - Processa TODOS os candidatos (todas as páginas)
-- ✅ **Excel em tempo real**: salva após cada candidato
-- ✅ Solicita **login e senha** no início (não salva credenciais em arquivo)
+- ✅ Paginação automática (todas as páginas)
+- ✅ Excel em tempo real (salva após cada candidato)
+- ✅ Busca por lista de CPFs
+- ✅ Exporta todos os campos do sistema, organizados por aba/seção
+- ✅ Logs detalhados de ações e ordem de leitura (TSV)
+- ✅ Visualização em tempo real em arquivo TXT
+- ✅ Suporte a modo headless (sem abrir navegador)
+- ✅ Destaca elementos no navegador (debug visual)
+- ✅ Instalação fácil via requirements.txt
+- ✅ Permite inserir logo personalizado no cabeçalho da planilha
 
 ### 🎯 Dados Extraídos
 
-**Dados Principais:**
-Nome, CPF, Telefone, Email, RG, Data de nascimento, Raça, Gênero, Estado civil, Cadastro preferencial, Deficiência, Doença, Observação, Diagnóstico social, Tipo de beneficiário, Situação de emprego, Informações CadÚnico, Loteamento
+**Principais:** Nome, CPF, Telefone, Email, RG, Data de nascimento, Raça, Gênero, Estado civil, Cadastro preferencial, Deficiência, Doença, Observação, Diagnóstico social, Tipo de beneficiário, Situação de emprego, Informações CadÚnico, Loteamento
 
 **Por Aba:**
-- 🏠 **Endereço**: CEP, logradouro, número, complemento, bairro, cidade, estado
-- 💰 **Renda**: Individual, familiar, per capita, fonte de renda
-- 📋 **Questionário**: Todas as perguntas e respostas
+- 🏠 Endereço: CEP, logradouro, número, complemento, bairro, cidade, estado
+- 💰 Renda: Individual, familiar, per capita, fonte de renda
+- 📋 Questionário: Todas as perguntas e respostas
 
 **Grupo Familiar:**
-- 👤 TITULAR
-- 👥 COTITULAR
-- 👨‍👩‍👧‍👦 COMPOSIÇÃO FAMILIAR
+- 👤 Titular
+- 👥 Cotitular
+- 👨‍👩‍👧‍👦 Composição Familiar
 
 ## 🚀 Instalação Rápida
 
 ### 1. Instalar Python
 - Baixe em: https://www.python.org/downloads/
-- ⚠️ **IMPORTANTE**: Marque "Add Python to PATH"
+- ⚠️ Marque "Add Python to PATH"
 
 ### 2. Instalar Dependências
 ```bash
@@ -38,69 +44,142 @@ pip install -r requirements.txt
 ```
 
 ### 3. Credenciais
-O bot solicita **usuário e senha** na execução.
+O bot solicita usuário e senha na execução.
 
 ## ▶️ Como Usar
 
+### Executando pelo Python
+```bash
+python habibot.py
+```
 
-### 📁 Estrutura do Projeto
+### Executando com opções avançadas
+- Extrair todos os candidatos:
+  ```bash
+  python habibot.py --todos
+  ```
+Extrair por lista de CPFs:
+  ```bash
+  python habibot.py --cpfs-file lista_cpfs.txt
+  ```
+
+  > 📄 **Como usar o arquivo de CPFs**
+  >
+  > 1. **Crie um arquivo texto** (ex: `lista_cpfs.txt`) com um CPF por linha.
+  > 2. **Salve preferencialmente na raiz do projeto** (mesma pasta do `habibot.py`).
+  > 3. **Exemplo de caminho:**
+  >    - `C:\Users\User\Desktop\Habibot\lista_cpfs.txt`
+  > 4. **Você pode usar outro nome ou pasta**, basta informar corretamente no parâmetro `--cpfs-file`.
+  >
+  > **Como informar o parâmetro:**
+  >
+  > - Caminho relativo (arquivo na mesma pasta do habibot.py):
+  >   ```bash
+  >   python habibot.py --cpfs-file lista_cpfs.txt
+  >   ```
+  > - Caminho absoluto (arquivo em outro local):
+  >   ```bash
+  >   python habibot.py --cpfs-file "C:\Users\User\Desktop\Habibot\lista_cpfs.txt"
+  >   ```
+  > - Caminho para subpasta:
+  >   ```bash
+  >   python habibot.py --cpfs-file assets/listas/cpfs.txt
+  >   ```
+  >
+  > **Formato do arquivo:**
+  > ```
+  > 123.456.789-01
+  > 987.654.321-00
+  > ...
+  > ```
+- Executar sem abrir navegador:
+  ```bash
+  python habibot.py --headless
+  ```
+- Limitar quantidade de candidatos:
+  ```bash
+  python habibot.py --max-candidatos 10
+  ```
+- Ativar debug visual:
+  ```bash
+  python habibot.py --debug-visual
+  ```
+
+### Parâmetros disponíveis
+- `--todos` : Extrai todos os candidatos
+- `--cpfs-file arquivo.txt` : Extrai apenas CPFs informados
+- `--headless` : Executa sem abrir navegador
+- `--headed` : Executa com navegador visível
+- `--cooldown N` : Espera N segundos entre extrações
+- `--max-candidatos N` : Limita o total extraído
+- `--debug` : Ativa logs detalhados
+- `--debug-visual` : Destaca elementos no navegador
+- `--non-interactive` : Não faz perguntas, usa apenas flags/variáveis
+- `--prompt-credenciais` : Permite digitar usuário/senha mesmo com --non-interactive
+- `--no-pause` : Não espera ENTER ao final
+
+## 📁 Estrutura do Projeto
 ```
 Habibot/
-├── bot_habibot.py           # Script principal do bot
-├── build_exe.ps1            # Script de build do executável (Windows)
-├── requirements.txt         # Dependências Python
-├── README.md                # Documentação
-├── .gitignore               # Arquivos ignorados pelo Git
-│
-├───.github/
-│   └───workflows/
-│           release.yml      # CI/CD
+├── habibot.py                # Script principal do bot
+├── build_exe.ps1             # Script de build do executável (Windows)
+├── requirements.txt          # Dependências Python
+├── README.md                 # Documentação
 │
 ├───assets/
 │   ├───build/
-│   │       version_info.txt # Metadados do executável
+│   │       version_info.txt  # Metadados do executável
 │   ├───drivers/
-│   │       chromedriver.exe # ChromeDriver incluso para modo offline
+│   │       chromedriver.exe  # ChromeDriver incluso para modo offline
 │   └───images/
 │       └───icons/
-│               icon.png     # Ícone base (PNG)
+│       └───logos/
+│               logo.png # Logo padrão para cabeçalho da planilha
+│               (adicione sua logo personalizada aqui)
 │
-├───dist/
-│       Habibot_<versão>.exe      # Executável gerado pelo build
+├───debug/                    # Logs de execução (TSV)
+│
+├───Extração de Dados Habibot/
+│       VISUALIZAÇÃO-...txt   # Visualização em tempo real
+│
+├───Sistema/
+│       Dados que precisam ser extraídos.txt
+│       Capturas de tela/
 │
 └───tools/
-	make_windows_ico.py  # Script para gerar ícones Windows
+        make_windows_ico.py   # Script para gerar ícones Windows
 ```
 
+## 🖼️ Como adicionar uma imagem de logo no cabeçalho da planilha
 
-### Opção 1: Executável (Recomendado)
-1. Execute: `dist/Habibot_Dev.exe` (ou o nome gerado pelo build)
-2. Aguarde até aparecer a mensagem de conclusão
-3. O arquivo Excel será gerado na pasta `Extração de Dados Habibot/`
-
-### Opção 2: Linha de Comando (Python)
-```bash
-python bot_habibot.py
-```
+1. Prepare sua imagem no formato PNG (recomendado até 180x70px).
+2. Renomeie para `logo.png` ou outro nome desejado.
+3. Coloque o arquivo em `assets/images/logos/`.
+   - Exemplo: `assets/images/logos/minha-logo.png`
+4. O bot insere automaticamente a imagem encontrada em `assets/images/logos/logo.png` no cabeçalho da planilha gerada.
+   - Para usar outro nome, renomeie sua imagem para `logo.png` ou altere o nome no código (classe `ExcelTempoReal`).
+5. Se não houver imagem, o cabeçalho será gerado apenas com texto.
 
 ## 📁 Arquivo Excel Gerado
 
-Pasta: `Extração de Dados Habibot/`
+Pasta: `Habibot - Dados Extraídos/`
 
-Nome: `Candidatos_Habibot_AAAA-MM-DD_HH-MM-SS.xlsx`
+Nome: `Candidatos_<sistema>_AAAA-MM-DD_HH-MM-SS.xlsx`
 
-- **1 planilha**: `Dados`
-- **1 candidato por linha**
+- 1 planilha: `Dados`
+- 1 candidato por linha
 - Campos vazios são preenchidos com `Não Informado`
-- `Data de extração` é a última coluna
+- Data de extração é a última coluna
+- Cabeçalho com logo (se existir em `assets/images/logos/logo.png`)
+- Cabeçalhos mesclados por aba/seção/campo
+- Visualização em tempo real: arquivo TXT
 
 Durante a execução existe um arquivo temporário de visualização:
-- `VISUALIZACAO-Candidatos_Habibot_AAAA-MM-DD_HH-MM-SS.xlsx`
+- `VISUALIZACAO_<sistema>_AAAA-MM-DD_HH-MM-SS.txt`
 
 Obs (Windows/Excel): se o arquivo de visualização estiver aberto no Excel, o Windows pode bloquear escrita.
 Quando isso acontecer, o bot cria uma nova cópia numerada.
 Ao final (ou Ctrl+C), os arquivos de visualização são apagados e fica apenas o arquivo final.
-
 
 ## 🧱 Gerar Executável (Windows)
 
@@ -115,7 +194,7 @@ Saída:
 
 ### 🌐/🔌 ChromeDriver incluso
 
-O build já embute um `chromedriver.exe` em `assets/drivers/chromedriver.exe` dentro do EXE, para rodar em um PC **sem internet**.
+O build já embute um `chromedriver.exe` em `assets/drivers/chromedriver.exe` dentro do EXE, para rodar em um PC sem internet.
 
 Observações:
 - O Chrome precisa estar instalado na máquina de destino.
@@ -124,7 +203,7 @@ Observações:
 
 ## 🔄 Paginação Automática
 
-O bot detecta automaticamente quando há mais páginas e processa **TODOS** os candidatos disponíveis no sistema, não apenas os primeiros 30.
+O bot detecta automaticamente quando há mais páginas e processa todos os candidatos disponíveis no sistema, não apenas os primeiros 30.
 
 Progresso exibido:
 ```
@@ -178,3 +257,10 @@ Durante execução, o bot exibe:
 - ⚠️ Avisos
 - ❌ Erros
 - 📊 Progresso (candidatos/páginas)
+- 👁️ Logs detalhados em TSV na pasta `debug/` (quando rodando como .py)
+
+## 📚 Dependências
+
+Veja `requirements.txt` para detalhes e instruções de instalação.
+
+---
