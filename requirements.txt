@@ -1,0 +1,16 @@
+# Este arquivo lista as dependências que devem ser instaladas via pip para rodar o bot Habibot.
+
+# Comando para instalar as dependências:
+
+# pip install -r requirements.txt
+
+# Dependências padrão do Python (não precisam ser instaladas via pip, mas são usadas):
+# os, sys, shutil, subprocess, time, traceback, datetime, getpass, pathlib, textwrap, argparse, signal, re, unicodedata
+ 
+selenium                # - Automação de navegador (WebDriver)
+webdriver-manager       # - Gerenciamento automático do driver do Chrome
+pyinstaller             # - Gera executável standalone do bot (opcional para distribuição)
+pillow                  # - Manipulação de imagens (usado para inserir logos no Excel)
+openpyxl                # - Manipulação de arquivos Excel (.xlsx)
+pandas                  # - Manipulação e análise de dados tabulares
+pwinput                 # - Entrada de senha mascarada no terminal

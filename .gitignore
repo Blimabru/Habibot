@@ -1,0 +1,53 @@
+# Arquivos Excel gerados
+*.xlsx
+*.xls
+Relatório/*.xlsx
+Relatório/*.xls
+
+# Saída do bot
+Habibot - Dados Extraídos/*
+
+# Arquivos de debug
+_debug/*.png
+_debug/*.html
+_debug/*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Selenium
+geckodriver.log
+chromedriver.log
+
+# PyInstaller
+*.spec
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
+sistema/*
+
+# Driver
+assets/drivers/chromedriver.exe
+
+# Ícones
+assets/images/icons/*
+!assets/images/icons/icon.png
+
+# Logs
+*.log
+debug/*
