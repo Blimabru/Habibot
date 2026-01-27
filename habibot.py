@@ -1432,139 +1432,105 @@ class ExtratorHabibot:
         return "\n".join(dados_agregados)
 
     def _extrair_tabela_com_modal_edicao_itens(self, campos_mapeados: dict[str, str], *, colunas_tabela: dict[int, str] | None = None) -> list[dict[str, str]]:
-        """Extrai itens de uma tabela abrindo o modal de edição em cada linha.
-
-        Retorna uma lista de dicionários (1 por linha), onde as chaves são os nomes
-        finais de coluna (valores em `campos_mapeados` e em `colunas_tabela`).
-
-        - `campos_mapeados`: {label_visivel: nome_coluna_saida}
-        - `colunas_tabela`: {indice_td: nome_coluna_saida}
-        """
         itens: list[dict[str, str]] = []
         try:
+            # Pega todas as tabelas visíveis
             tabelas = self.driver.find_elements(By.TAG_NAME, "table")
             tabela_alvo = None
             for t in tabelas:
                 if t.is_displayed():
-                    tabela_alvo = t
-                    break
-            if not tabela_alvo:
-                return []
+                    # Verifica se tem linhas no corpo
+                    if t.find_elements(By.CSS_SELECTOR, "tbody tr"):
+                        tabela_alvo = t
+                        break
+            
+            if not tabela_alvo: return []
 
+            # Conta linhas primeiro
             linhas = tabela_alvo.find_elements(By.CSS_SELECTOR, "tbody tr")
-            if not linhas:
-                return []
+            qtd_linhas = len(linhas)
 
-            for i in range(len(linhas)):
+            for i in range(qtd_linhas):
                 _check_abort()
                 item: dict[str, str] = {}
+                
+                # Recarrega tabela (evita stale element)
                 try:
-                    # Rebusca a linha para evitar stale element
                     tabelas = self.driver.find_elements(By.TAG_NAME, "table")
-                    tabela_atual = None
-                    for t in tabelas:
-                        if t.is_displayed():
-                            tabela_atual = t
-                            break
-                    if not tabela_atual:
-                        break
-                    linhas_atual = tabela_atual.find_elements(By.CSS_SELECTOR, "tbody tr")
-                    if i >= len(linhas_atual):
-                        break
-                    linha = linhas_atual[i]
+                    t_atual = [t for t in tabelas if t.is_displayed() and t.find_elements(By.CSS_SELECTOR, "tbody tr")][0]
+                    linha = t_atual.find_elements(By.CSS_SELECTOR, "tbody tr")[i]
+                except: continue
 
-                    if colunas_tabela:
-                        try:
-                            tds = linha.find_elements(By.TAG_NAME, "td")
-                            for idx_td, nome_saida in colunas_tabela.items():
-                                try:
-                                    if 0 <= int(idx_td) < len(tds):
-                                        item[nome_saida] = self._texto_limpo(tds[int(idx_td)].text)
-                                except:
-                                    continue
-                        except:
-                            pass
+                # --- ESTRATÉGIA 1: Tenta pegar dados da linha (Fallback) ---
+                # Se o modal falhar, pelo menos teremos o Nome e CPF que aparecem na tabela
+                try:
+                    cols = linha.find_elements(By.TAG_NAME, "td")
+                    if len(cols) >= 2:
+                        # Tenta adivinhar colunas comuns
+                        txt0 = self._texto_limpo(cols[0].text)
+                        txt1 = self._texto_limpo(cols[1].text)
+                        
+                        # Se mapeamento pedir "Nome", preenche com a coluna 0
+                        for k, v in campos_mapeados.items():
+                            if "Nome" in v or "nome" in k: item[v] = txt0
+                            if "CPF" in v or "cpf" in k: item[v] = txt1
+                except: pass
 
-                    # Abre modal
+                # --- ESTRATÉGIA 2: Clicar no botão Editar ---
+                btn_editar = None
+                try:
+                    # Busca genérica por ícone de lápis ou texto editar
+                    btn_editar = linha.find_element(By.XPATH, ".//*[contains(@class, 'pencil') or contains(@class, 'edit') or contains(text(), 'Editar')]")
+                    # Se achou icone, pega o botão pai
+                    if btn_editar.tag_name == 'i':
+                        btn_editar = btn_editar.find_element(By.XPATH, "./..")
+                except: pass
+                
+                if btn_editar:
                     try:
-                        btn_editar = linha.find_element(By.CSS_SELECTOR, "button.btn-soft-info, .ri-pencil-line")
-                    except:
-                        btn_editar = None
-                    if not btn_editar:
-                        continue
-
-                    self._dbg(f"📝 Abrindo modal de edição (linha {i+1})")
-                    self._highlight(btn_editar, rotulo=f"EDITAR LINHA {i+1}")
-                    self._log_acao('MODAL_ABRIR', detalhe=f"linha={i+1}")
-                    self.driver.execute_script("arguments[0].click();", btn_editar)
-                    time.sleep(1.2)
-
-                    # Extrai campos dentro do modal.
-                    # Aceita 2 formatos:
-                    # 1) {label_visivel: nome_coluna_saida}
-                    # 2) {nome_coluna_saida: [label1, label2, ...]}  (variantes, mantendo a ordem das colunas)
-                    if campos_mapeados:
-                        try:
-                            primeiro_valor = next(iter(campos_mapeados.values()))
-                        except:
-                            primeiro_valor = None
-
-                        if isinstance(primeiro_valor, list):
-                            # Formato 2
-                            for nome_saida, labels_busca in campos_mapeados.items():
-                                try:
-                                    if item.get(nome_saida) is not None and (item.get(nome_saida) or "") != "":
-                                        continue
-                                    for label_busca in (labels_busca or []):
-                                        self._dbg(f"   🔎 {nome_saida} <= '{label_busca}'")
-                                        ok, val = self._extrair_por_label_simples_found(label_busca)
-                                        if ok:
-                                            item[nome_saida] = val
+                        self._highlight(btn_editar, rotulo="CLICAR")
+                        # Tenta clicar via JS (mais forte)
+                        self.driver.execute_script("arguments[0].click();", btn_editar)
+                        
+                        # Espera modal abrir (procura pelo título do modal ou campo form)
+                        time.sleep(1.5) # Pausa segura
+                        
+                        # Extrai os dados do modal
+                        if campos_mapeados:
+                            # Se for lista de variantes (novo formato)
+                            primeiro_val = next(iter(campos_mapeados.values())) if campos_mapeados else None
+                            if isinstance(primeiro_val, list):
+                                for nome_col, labels in campos_mapeados.items():
+                                    for lbl in labels:
+                                        ok, val = self._extrair_por_label_simples_found(lbl)
+                                        if ok and val:
+                                            item[nome_col] = val
                                             break
-                                except:
-                                    item[nome_saida] = item.get(nome_saida, "")
-                        else:
-                            # Formato 1 (compat)
-                            for label_busca, nome_saida in (campos_mapeados or {}).items():
-                                try:
-                                    atual = item.get(nome_saida) or ""
-                                    if atual:
-                                        continue
-                                    self._dbg(f"   🔎 {nome_saida} <= '{label_busca}'")
-                                    item[nome_saida] = self._extrair_por_label_simples(label_busca)
-                                except:
-                                    item[nome_saida] = item.get(nome_saida, "")
+                            else:
+                                for lbl, nome_col in campos_mapeados.items():
+                                    item[nome_col] = self._extrair_por_label_simples(lbl)
 
-                    # Fecha modal
-                    try:
-                        btns_fechar = self.driver.find_elements(By.CSS_SELECTOR, ".modal.show button.btn-close, .modal.show button.btn-light, button[data-bs-dismiss='modal']")
-                        fechou = False
-                        for btn in btns_fechar:
-                            if btn.is_displayed():
-                                self.driver.execute_script("arguments[0].click();", btn)
-                                fechou = True
-                                break
-                        if not fechou:
-                            ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
-                    except:
+                        # Fecha o Modal
                         try:
+                            btns_fechar = self.driver.find_elements(By.CSS_SELECTOR, ".modal.show button.btn-close, button[data-bs-dismiss='modal']")
+                            for b in btns_fechar:
+                                if b.is_displayed():
+                                    self.driver.execute_script("arguments[0].click();", b)
+                                    break
+                            time.sleep(0.5)
+                        except: 
                             ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
-                        except:
-                            pass
 
-                    self._log_acao('MODAL_FECHAR', detalhe=f"linha={i+1}")
-
-                    time.sleep(0.8)
-                    itens.append(item)
-                except Exception:
-                    try:
+                    except Exception as e:
+                        print(f"Erro ao abrir modal linha {i}: {e}")
+                        # Se deu erro no modal, cancela (ESC) e mantém os dados do Fallback
                         ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
-                    except:
-                        pass
-                    time.sleep(0.6)
-                    continue
-        except Exception:
-            return []
+
+                itens.append(item)
+
+        except Exception as e:
+            print(f"Erro geral tabela: {e}")
+            pass
 
         return itens
 
@@ -1771,47 +1737,61 @@ class ExtratorHabibot:
         aba = 'Renda'
         secao = 'Dados da Renda'
         
-        # Listas para guardar os dados de todas as linhas (caso tenha mais de uma renda)
-        pessoas = []
-        tipos = []
-        valores = []
+        # Estrutura para guardar os dados
+        dados_colunas = {
+            'Pessoa': [],
+            'Tipo de Renda': [],
+            'Valor da Renda': []
+        }
 
         try:
-            # 2. Pega todas as linhas da tabela
-            linhas = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            # Pega TODAS as tabelas da tela para não confundir com tabelas de layout
+            tabelas = self.driver.find_elements(By.TAG_NAME, "table")
             
-            for linha in linhas:
-                try:
-                    # Pega as colunas da linha
+            encontrou_dados = False
+            for tabela in tabelas:
+                if not tabela.is_displayed(): continue
+                
+                # Tenta ler as linhas dessa tabela
+                linhas = tabela.find_elements(By.CSS_SELECTOR, "tbody tr")
+                for linha in linhas:
                     cols = linha.find_elements(By.TAG_NAME, "td")
-                    
-                    # Verifica se tem as 3 colunas que aparecem no seu print
+                    # No seu print, a tabela tem 3 colunas de dados relevantes
                     if len(cols) >= 3:
-                        nome = self._texto_limpo(cols[0].text)  # Coluna 1: Nome
-                        tipo = self._texto_limpo(cols[1].text)  # Coluna 2: Tipo
-                        valor = self._texto_limpo(cols[2].text) # Coluna 3: Renda
+                        nome = self._texto_limpo(cols[0].text)
+                        tipo = self._texto_limpo(cols[1].text)
+                        valor = self._texto_limpo(cols[2].text)
                         
-                        if nome or tipo or valor:
-                            pessoas.append(nome)
-                            tipos.append(tipo)
-                            valores.append(valor)
-                except:
-                    continue
-                    
-        except Exception:
+                        # Validação: só adiciona se parecer um dado real
+                        if nome or "R$" in valor:
+                            dados_colunas['Pessoa'].append(nome)
+                            dados_colunas['Tipo de Renda'].append(tipo)
+                            dados_colunas['Valor da Renda'].append(valor)
+                            encontrou_dados = True
+                
+                # Se achou dados nessa tabela, para de procurar em outras
+                if encontrou_dados:
+                    break
+
+        except Exception as e:
+            print(f"Erro ao ler tabela renda: {e}")
             pass
 
-        # 3. Organiza para salvar no Excel
-        # Se tiver 2 rendas, ele vai salvar: "João\nMaria" na mesma célula (pular linha)
-        dados = {}
-        dados[_col_key(aba, secao, 'Pessoa')] = "\n".join(pessoas)
-        dados[_col_key(aba, secao, 'Tipo de Renda')] = "\n".join(tipos)
-        dados[_col_key(aba, secao, 'Valor da Renda')] = "\n".join(valores)
+        # Monta o dicionário final formatado
+        row = {}
         
-        # Esse campo não aparece na tabela, então deixamos em branco ou tentamos achar na tela
-        dados[_col_key(aba, secao, 'Tipo se Apto Para Reurb')] = "" 
+        # Formatação Visual: Bolinha e Linha Tracejada para separar pessoas
+        def formatar_lista(lista):
+            if not lista: return "Não Informado"
+            # Adiciona um separador visual entre os itens
+            return "\n--------------------\n".join([f"• {x}" if x else "-" for x in lista])
 
-        return dados
+        row[_col_key(aba, secao, 'Pessoa')] = formatar_lista(dados_colunas['Pessoa'])
+        row[_col_key(aba, secao, 'Tipo de Renda')] = formatar_lista(dados_colunas['Tipo de Renda'])
+        row[_col_key(aba, secao, 'Valor da Renda')] = formatar_lista(dados_colunas['Valor da Renda'])
+        row[_col_key(aba, secao, 'Tipo se Apto Para Reurb')] = "" 
+
+        return row
 
     # --- DEMAIS ABAS ---
     def extrair_endereco(self):
@@ -1857,51 +1837,52 @@ class ExtratorHabibot:
         
         saida: dict[str, str] = {}
         
+        # Lista EXATA das perguntas que você definiu no SCHEMA lá no começo do arquivo
+        perguntas_alvo = [
+            '1. A mulher é a responsável pela unidade familiar?',
+            '2. Há pessoa negra na composição familiar?',
+            '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
+            '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
+            '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
+            '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
+            '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
+            '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
+            '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
+        ]
+
         try:
-            # Pega todas as linhas de pergunta
-            rows = self.driver.find_elements(By.CSS_SELECTOR, ".row, .col-12, .question-row")
-            
-            for row in rows:
-                try:
-                    # Tenta achar o texto da pergunta
-                    pergunta_txt = ""
+            for pergunta in perguntas_alvo:
+                # Usa a busca inteligente (que olha Label, Radio, Select e "Avô")
+                # Isso resolve o problema de não achar a bolinha ou o texto
+                encontrou, resposta = self._extrair_por_label_simples_found(pergunta)
+                
+                if encontrou and resposta:
+                    # Normaliza a chave para bater com o Excel
+                    saida[_norm_texto_chave(pergunta)] = resposta
+                else:
+                    # Se não achou resposta, tenta ver se tem um radio "Sim" marcado perto do texto da pergunta
                     try:
-                        els = row.find_elements(By.TAG_NAME, "h6")
-                        if els: pergunta_txt = els[0].text
-                        else:
-                            els = row.find_elements(By.TAG_NAME, "label")
-                            if els: pergunta_txt = els[0].text
+                        # Busca genérica por texto na tela
+                        els = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{pergunta[:20]}')]")
+                        for el in els:
+                            if el.is_displayed():
+                                # Tenta achar radio marcado proximo
+                                try:
+                                    # Procura no "pai" e no "avô"
+                                    pai = el.find_element(By.XPATH, "..")
+                                    avo = el.find_element(By.XPATH, "../..")
+                                    checkeds = avo.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked")
+                                    if checkeds:
+                                        lbl = checkeds[0].find_element(By.XPATH, "./following-sibling::label")
+                                        saida[_norm_texto_chave(pergunta)] = self._texto_limpo(lbl.text)
+                                        break
+                                except: pass
                     except: pass
-                    
-                    pergunta_txt = self._texto_limpo(pergunta_txt)
-                    if not pergunta_txt or len(pergunta_txt) < 5: continue
 
-                    # Procura resposta (radio button marcado)
-                    resposta = ""
-                    radios = row.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked")
-                    
-                    if radios:
-                        try:
-                            # Pega o label do lado do radio marcado
-                            lbl = radios[0].find_element(By.XPATH, "./following-sibling::label")
-                            resposta = self._texto_limpo(lbl.text)
-                        except:
-                            resposta = "Sim (Marcado)"
-                    else:
-                        # Se não for radio, tenta campo de texto
-                        inputs = row.find_elements(By.CSS_SELECTOR, "input[type='text'], textarea, select")
-                        for inp in inputs:
-                            if inp.is_displayed():
-                                val = self._valor_campo(inp)
-                                if val: resposta = val
-                    
-                    if resposta:
-                        # Chave normalizada para bater com o Schema
-                        saida[_norm_texto_chave(pergunta_txt)] = resposta
-
-                except:
-                    continue
-        except Exception:
+        except Exception as e:
+            print(f"Erro questionário: {e}")
             pass
             
         return saida
