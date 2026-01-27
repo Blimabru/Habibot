@@ -455,7 +455,7 @@ SCHEMA_ESTRUTURA: list[tuple[str, list[tuple[str, list[str]]]]] = [
                 'Dados de Contato',
                 ['Email', 'Telefone', 'Telefone Celular', 'Telefone Comercial', 'Telefone Para Recados'],
             ),
-            ('Parecer Social', ['Diagnóstico Social', 'Observações']),
+            ('Anotações', ['Parecer Social', 'Diagnóstico Social', 'Observações']),
         ],
     ),
     (
@@ -517,7 +517,7 @@ SCHEMA_ESTRUTURA: list[tuple[str, list[tuple[str, list[str]]]]] = [
                 'Dados de Contato',
                 ['Email', 'Telefone', 'Telefone Celular', 'Telefone Comercial', 'Telefone Para Recados'],
             ),
-            ('Parecer Social', ['Diagnóstico Social', 'Observações']),
+            ('Anotações', ['Parecer Social', 'Diagnóstico Social', 'Observações']),
         ],
     ),
     (
@@ -1604,9 +1604,10 @@ class ExtratorHabibot:
             ('Titular', 'Dados de Contato', 'Telefone Comercial', [('label', 'Telefone Comercial')]),
             ('Titular', 'Dados de Contato', 'Telefone Para Recados', [('label', 'Telefone Para Recados')]),
 
-            # Parecer Social
-            ('Titular', 'Parecer Social', 'Diagnóstico Social', [('label', 'Diagnóstico Social')]),
-            ('Titular', 'Parecer Social', 'Observações', [('label', 'Observações')]),
+            # Anotações
+            ('Titular', 'Anotações', 'Parecer Social', [('label', 'Parecer Social')]), # <--- NOVO
+            ('Titular', 'Anotações', 'Diagnóstico Social', [('label', 'Diagnóstico Social')]),
+            ('Titular', 'Anotações', 'Observações', [('label', 'Observações')]),
         ]
 
         for aba, secao, campo, tentativas in passos:
@@ -1667,6 +1668,7 @@ class ExtratorHabibot:
             especificacao.append(('Dados de Contato', c, [('label', c)]))
 
         # Parecer
+        especificacao.append(('Parecer Social', 'Parecer Social', [('label', 'Parecer Social')]))
         especificacao.append(('Parecer Social', 'Diagnóstico Social', [('label', 'Diagnóstico Social')]))
         especificacao.append(('Parecer Social', 'Observações', [('label', 'Observações')]))
 
