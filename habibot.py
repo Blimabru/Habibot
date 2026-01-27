@@ -1718,7 +1718,6 @@ class ExtratorHabibot:
         return self._itens_para_colunas_multilinha(itens, col_keys)
     
     def extrair_renda(self):
-        # 1. Clica na aba e espera
         if not self.clicar_aba('Renda'):
             return {}
 
@@ -1730,46 +1729,44 @@ class ExtratorHabibot:
         valores = []
 
         try:
-            # Espera até 5 segundos por qualquer tabela visível
-            WebDriverWait(self.driver, 5).until(
-                EC.presence_of_element_located((By.TAG_NAME, "table"))
-            )
+            # Espera 2 segundos para garantir que a tabela carregou
+            time.sleep(2)
             
-            # Pega todas as tabelas
+            # Pega todas as tabelas visíveis
             tabelas = self.driver.find_elements(By.TAG_NAME, "table")
             
             for tabela in tabelas:
                 if not tabela.is_displayed(): continue
                 
-                # Pega as linhas do corpo da tabela
                 linhas = tabela.find_elements(By.CSS_SELECTOR, "tbody tr")
-                
-                # Se achou linhas com dados, processa
-                dados_nesta_tabela = False
+                if not linhas: continue
+
+                # Verifica se é a tabela certa olhando o cabeçalho (se tiver) ou conteúdo
+                # Tenta ler as linhas
                 for linha in linhas:
                     cols = linha.find_elements(By.TAG_NAME, "td")
-                    # Garante que tem pelo menos 3 colunas (Nome, Tipo, Valor)
+                    # Precisa ter pelo menos 3 colunas (Nome, Tipo, Valor)
                     if len(cols) >= 3:
                         nome = self._texto_limpo(cols[0].text)
-                        # Só processa se tiver nome preenchido
-                        if nome:
+                        
+                        # Validação simples: Se o nome for muito curto, pode ser lixo
+                        if len(nome) > 2:
                             pessoas.append(nome)
-                            # Tenta pegar as outras colunas (com proteção se não existir)
+                            # Proteção caso falte coluna
                             tipo = self._texto_limpo(cols[1].text) if len(cols) > 1 else ""
                             valor = self._texto_limpo(cols[2].text) if len(cols) > 2 else ""
                             
                             tipos.append(tipo)
                             valores.append(valor)
-                            dados_nesta_tabela = True
                 
-                # Se achou dados nesta tabela, não precisa olhar as outras (evita duplicidade)
-                if dados_nesta_tabela:
+                # Se achou dados, para (assume que só tem uma tabela de renda válida)
+                if pessoas:
                     break
 
         except Exception:
-            pass # Se der erro ou não achar tabela, retorna vazio
+            pass
 
-        # Função de formatação (Retorna VAZIO se não tiver dados)
+        # Formatação
         def formatar(lista):
             if not lista: return "" 
             return "\n--------------------\n".join([f"• {x}" for x in lista])
@@ -1824,9 +1821,11 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
+        # Espera forçada para garantir que as perguntas carregaram
+        time.sleep(1.5)
+        
         saida: dict[str, str] = {}
         
-        # Mapeamento: Texto Parcial -> Nome Completo (para o Excel)
         mapa_perguntas = {
             'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
             'pessoa negra': '2. Há pessoa negra na composição familiar?',
@@ -1842,58 +1841,52 @@ class ExtratorHabibot:
         }
 
         try:
-            # Pega todo o texto da página para busca rápida
-            source_lower = self.driver.page_source.lower()
-            
             for palavra_chave, pergunta_completa in mapa_perguntas.items():
-                # Se a palavra chave nem está no HTML, pula (economiza tempo)
-                if palavra_chave.lower() not in source_lower:
-                    continue
-
                 resposta = ""
-                # Busca elementos que contenham o texto da pergunta
-                # Usa normalize-space para ignorar espaços extras e quebras de linha
+                # Busca elementos que contenham o texto da pergunta (case insensitive)
                 xpath_busca = f"//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{palavra_chave.lower()}')]"
                 elementos = self.driver.find_elements(By.XPATH, xpath_busca)
                 
                 for el in elementos:
                     if not el.is_displayed(): continue
                     
-                    # Estratégia "Radar": Procura a resposta perto da pergunta
-                    # 1. Verifica se tem um input RADIO marcado no "pai" ou "avô" ou "bisavô"
-                    for niveis in ["./..", "./../..", "./../../.."]:
+                    # Estratégia 1: Procura RADIO BUTTON perto (Irmão, Pai, Avô)
+                    # Sobe até 4 níveis para garantir que pega casos onde a pergunta está numa coluna e a resposta noutra
+                    for niveis in ["./..", "./../..", "./../../..", "./../../../.."]:
                         try:
                             ancestral = el.find_element(By.XPATH, niveis)
                             radios = ancestral.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked")
                             if radios:
-                                # Achou um marcado! Pega o label dele.
+                                # Achou radio marcado! Pega o label dele.
                                 lbl = radios[0].find_element(By.XPATH, "./following-sibling::label")
-                                resposta = self._texto_limpo(lbl.text)
-                                if resposta: break
+                                txt = self._texto_limpo(lbl.text)
+                                if txt: 
+                                    resposta = txt
+                                    break
                         except: pass
                         if resposta: break
                     
                     if resposta: break
 
-                    # 2. Se não achou Radio, tenta Input de Texto (ex: Observações)
+                    # Estratégia 2: Se não for radio, tenta achar TEXTO "Sim" ou "Não" solto perto
+                    # Útil se o site usar spans em vez de radios reais
                     if not resposta:
-                        for niveis in ["./..", "./../.."]:
-                            try:
-                                ancestral = el.find_element(By.XPATH, niveis)
-                                inps = ancestral.find_elements(By.CSS_SELECTOR, "input[type='text'], textarea")
-                                for inp in inps:
-                                    val = inp.get_attribute("value")
-                                    if val:
-                                        resposta = self._texto_limpo(val)
-                                        break
-                                if resposta: break
-                            except: pass
+                        try:
+                            avo = el.find_element(By.XPATH, "./../..")
+                            # Procura textos Sim/Não dentro do bloco da pergunta
+                            textos = avo.text.split('\n')
+                            for t in textos:
+                                t_limpo = t.strip().lower()
+                                if t_limpo in ['sim', 'não', 'nao']:
+                                    resposta = t.strip().capitalize()
+                                    break
+                        except: pass
 
                 if resposta:
                     # Salva usando a chave normalizada
                     saida[_norm_texto_chave(pergunta_completa)] = resposta
                     
-                    # Salva também com a chave exata do Schema
+                    # Salva também com a chave exata do Schema para o Excel reconhecer
                     chave_schema = ""
                     for p_schema in COL_SPECS:
                         if p_schema.aba == 'Questionário' and palavra_chave in p_schema.campo.lower():
@@ -1903,7 +1896,7 @@ class ExtratorHabibot:
                         saida[_col_key('Questionário', 'Perguntas', chave_schema)] = resposta
 
         except Exception as e:
-            print(f"Erro ao ler questionário: {e}")
+            print(f"Erro questionário: {e}")
 
         return saida
 
