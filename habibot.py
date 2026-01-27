@@ -2749,50 +2749,28 @@ class HabibotBot:
                             registro[_col_key('Titular', 'Dados Gerais', 'CPF/CNPJ')] = cpf11
                             registro[_col_key('Titular', 'Parecer Social', 'Observações')] = 'CPF não encontrado na lista de candidatos.'
                         else:
-                            # Extrai o nome do titular diretamente da lista antes de clicar em Editar
-                            nome_titular = ''
-                            for pos in indices:
+                            # CORREÇÃO: Usa a lista JÁ VISÍVEL para não pesquisar de novo
+                            linhas_tela = self.obter_linhas()
+                            
+                            # Clica e Extrai usando o índice encontrado na busca anterior
+                            if indices:
+                                pos = indices[0] # Pega o primeiro match
                                 _check_abort()
-                                linha = self._obter_linha_por_cpf_posicao(cpf11, pos)
-                                if not linha:
-                                    continue
-                                # Busca o <td> do nome do titular na linha
-                                try:
-                                    tds = linha.find_elements(By.TAG_NAME, "td")
-                                    nome_coluna = ''
-                                    # Tenta identificar a coluna do nome pelo cabeçalho da tabela
-                                    thead = None
+                                if pos < len(linhas_tela):
+                                    linha_atual = linhas_tela[pos]
+                                    
+                                    # Pega nome só pra mostrar no log
                                     try:
-                                        thead = linha.find_element(By.XPATH, "../../thead")
-                                    except Exception:
-                                        pass
-                                    idx_nome = 1  # fallback: segunda coluna
-                                    if thead:
-                                        ths = thead.find_elements(By.TAG_NAME, "th")
-                                        for idx, th in enumerate(ths):
-                                            thtxt = (th.text or '').strip().lower()
-                                            if 'nome' in thtxt:
-                                                idx_nome = idx
-                                                break
-                                    if tds and len(tds) > idx_nome:
-                                        nome_coluna = (tds[idx_nome].text or '').strip()
-                                    nome_titular = nome_coluna if nome_coluna else cpf11
-                                except Exception:
-                                    nome_titular = cpf11
-                                break  # Só pega o primeiro encontrado
-                            print(f"\n👤 Encontrado: {nome_titular}")
-                            print("")
-                            # Agora sim clica em Editar e extrai os dados
-                            for pos in indices:
-                                _check_abort()
-                                linha = self._obter_linha_por_cpf_posicao(cpf11, pos)
-                                if not linha:
-                                    continue
-                                total += 1
-                                self.abrir_candidato(linha)
-                                abriu_candidato = True
-                                registro = self.extrair_um()
-                                break  # Só pega o primeiro encontrado
+                                        tds = linha_atual.find_elements(By.TAG_NAME, "td")
+                                        nome_log = tds[1].text if len(tds) > 1 else cpf11
+                                        print(f"\n👤 Encontrado: {nome_log}")
+                                    except: print(f"\n👤 Encontrado: {cpf11}")
+                                    print("")
+
+                                    total += 1
+                                    self.abrir_candidato(linha_atual)
+                                    abriu_candidato = True
+                                    registro = self.extrair_um()
 
                         self.excel.adicionar_linha(registro)
                         continue
