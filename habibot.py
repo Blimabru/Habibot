@@ -1729,50 +1729,43 @@ class ExtratorHabibot:
         valores = []
 
         try:
-            # Espera segura (substitui WebDriverWait para evitar erros de import)
-            time.sleep(1.5)
+            # Pequena pausa técnica apenas para a tabela desenhar na tela
+            time.sleep(1)
             
-            # Pega todas as tabelas
             tabelas = self.driver.find_elements(By.TAG_NAME, "table")
             
             for tabela in tabelas:
                 if not tabela.is_displayed(): continue
                 
-                # Procura no corpo da tabela
                 linhas = tabela.find_elements(By.CSS_SELECTOR, "tbody tr")
-                
+                if not linhas: # Se não achou tbody, tenta tr direto
+                     linhas = tabela.find_elements(By.TAG_NAME, "tr")
+
                 for linha in linhas:
                     cols = linha.find_elements(By.TAG_NAME, "td")
-                    # Precisa ter 3 colunas (Nome, Tipo, Valor) + Ações
                     if len(cols) >= 3:
                         nome = self._texto_limpo(cols[0].text)
                         
-                        # Pula se for cabeçalho disfarçado
+                        # Ignora se for cabeçalho
                         if not nome or nome.lower() == 'nome':
                             continue
                             
-                        # Se chegou aqui, é dado real!
                         pessoas.append(nome)
-                        
-                        # Pega tipo e valor com segurança
-                        tipo = self._texto_limpo(cols[1].text) if len(cols) > 1 else ""
-                        valor = self._texto_limpo(cols[2].text) if len(cols) > 2 else ""
-                        
-                        tipos.append(tipo)
-                        valores.append(valor)
+                        # Garante que pega as outras colunas mesmo se estiverem vazias
+                        tipos.append(self._texto_limpo(cols[1].text) if len(cols) > 1 else "")
+                        valores.append(self._texto_limpo(cols[2].text) if len(cols) > 2 else "")
 
-                # Se achou dados reais nesta tabela, pode parar de procurar em outras tabelas
+                # Se achou pelo menos uma pessoa, considera que é a tabela certa e para
                 if pessoas:
                     break
                     
         except Exception:
             pass
 
-        # Formatação
+        # Formatação SIMPLES (Só pula linha, sem enfeites)
         def formatar(lista):
             if not lista: return "" 
-            # O separador que você gostou
-            return "\n--------------------\n".join([f"• {x}" for x in lista])
+            return "\n".join(lista)
 
         row = {}
         row[_col_key(aba, secao, 'Pessoa')] = formatar(pessoas)
@@ -1824,7 +1817,7 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
-        # Espera forçada para garantir que as perguntas carregaram
+        # Pausa mínima para carregamento
         time.sleep(1.5)
         
         saida: dict[str, str] = {}
@@ -1844,52 +1837,55 @@ class ExtratorHabibot:
         }
 
         try:
+            # Pega TODOS os elementos de texto da aba de uma vez
+            # Isso é infalível: se o texto tá na tela, ele vem pra cá.
+            elementos_texto = self.driver.find_elements(By.CSS_SELECTOR, "label, span, div, p, h4, h5, h6")
+            
             for palavra_chave, pergunta_completa in mapa_perguntas.items():
                 resposta = ""
-                # Busca elementos que contenham o texto da pergunta (case insensitive)
-                xpath_busca = f"//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{palavra_chave.lower()}')]"
-                elementos = self.driver.find_elements(By.XPATH, xpath_busca)
+                elemento_encontrado = None
                 
-                for el in elementos:
+                # Passo 1: Acha onde está a pergunta
+                for el in elementos_texto:
                     if not el.is_displayed(): continue
-                    
-                    # Estratégia 1: Procura RADIO BUTTON perto (Irmão, Pai, Avô)
-                    # Sobe até 4 níveis para garantir que pega casos onde a pergunta está numa coluna e a resposta noutra
-                    for niveis in ["./..", "./../..", "./../../..", "./../../../.."]:
+                    texto = (el.text or "").lower()
+                    if palavra_chave.lower() in texto:
+                        elemento_encontrado = el
+                        break
+                
+                if elemento_encontrado:
+                    # Passo 2: Acha a resposta perto da pergunta
+                    # Procura em 4 níveis acima (pai, avô, bisavô...)
+                    ancestral = elemento_encontrado
+                    for _ in range(4):
                         try:
-                            ancestral = el.find_element(By.XPATH, niveis)
+                            ancestral = ancestral.find_element(By.XPATH, "./..")
+                            
+                            # Tenta achar Radio Button marcado
                             radios = ancestral.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked")
                             if radios:
-                                # Achou radio marcado! Pega o label dele.
                                 lbl = radios[0].find_element(By.XPATH, "./following-sibling::label")
                                 txt = self._texto_limpo(lbl.text)
                                 if txt: 
                                     resposta = txt
                                     break
+                            
+                            # Tenta achar Texto "Sim/Não" solto
+                            if "sim" in ancestral.text.lower() or "não" in ancestral.text.lower():
+                                linhas = ancestral.text.split('\n')
+                                for l in linhas:
+                                    l = l.strip().lower()
+                                    if l in ['sim', 'não', 'nao']:
+                                        resposta = l.capitalize().replace('nao', 'Não')
+                                        break
+                            
+                            if resposta: break
                         except: pass
-                        if resposta: break
-                    
-                    if resposta: break
-
-                    # Estratégia 2: Se não for radio, tenta achar TEXTO "Sim" ou "Não" solto perto
-                    # Útil se o site usar spans em vez de radios reais
-                    if not resposta:
-                        try:
-                            avo = el.find_element(By.XPATH, "./../..")
-                            # Procura textos Sim/Não dentro do bloco da pergunta
-                            textos = avo.text.split('\n')
-                            for t in textos:
-                                t_limpo = t.strip().lower()
-                                if t_limpo in ['sim', 'não', 'nao']:
-                                    resposta = t.strip().capitalize()
-                                    break
-                        except: pass
-
+                        
                 if resposta:
-                    # Salva usando a chave normalizada
+                    # Salva nas duas chaves (normalizada e schema)
                     saida[_norm_texto_chave(pergunta_completa)] = resposta
                     
-                    # Salva também com a chave exata do Schema para o Excel reconhecer
                     chave_schema = ""
                     for p_schema in COL_SPECS:
                         if p_schema.aba == 'Questionário' and palavra_chave in p_schema.campo.lower():
