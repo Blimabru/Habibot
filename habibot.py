@@ -1729,46 +1729,49 @@ class ExtratorHabibot:
         valores = []
 
         try:
-            # Espera 2 segundos para garantir que a tabela carregou
-            time.sleep(2)
+            # Espera segura (substitui WebDriverWait para evitar erros de import)
+            time.sleep(1.5)
             
-            # Pega todas as tabelas visíveis
+            # Pega todas as tabelas
             tabelas = self.driver.find_elements(By.TAG_NAME, "table")
             
             for tabela in tabelas:
                 if not tabela.is_displayed(): continue
                 
+                # Procura no corpo da tabela
                 linhas = tabela.find_elements(By.CSS_SELECTOR, "tbody tr")
-                if not linhas: continue
-
-                # Verifica se é a tabela certa olhando o cabeçalho (se tiver) ou conteúdo
-                # Tenta ler as linhas
+                
                 for linha in linhas:
                     cols = linha.find_elements(By.TAG_NAME, "td")
-                    # Precisa ter pelo menos 3 colunas (Nome, Tipo, Valor)
+                    # Precisa ter 3 colunas (Nome, Tipo, Valor) + Ações
                     if len(cols) >= 3:
                         nome = self._texto_limpo(cols[0].text)
                         
-                        # Validação simples: Se o nome for muito curto, pode ser lixo
-                        if len(nome) > 2:
-                            pessoas.append(nome)
-                            # Proteção caso falte coluna
-                            tipo = self._texto_limpo(cols[1].text) if len(cols) > 1 else ""
-                            valor = self._texto_limpo(cols[2].text) if len(cols) > 2 else ""
+                        # Pula se for cabeçalho disfarçado
+                        if not nome or nome.lower() == 'nome':
+                            continue
                             
-                            tipos.append(tipo)
-                            valores.append(valor)
-                
-                # Se achou dados, para (assume que só tem uma tabela de renda válida)
+                        # Se chegou aqui, é dado real!
+                        pessoas.append(nome)
+                        
+                        # Pega tipo e valor com segurança
+                        tipo = self._texto_limpo(cols[1].text) if len(cols) > 1 else ""
+                        valor = self._texto_limpo(cols[2].text) if len(cols) > 2 else ""
+                        
+                        tipos.append(tipo)
+                        valores.append(valor)
+
+                # Se achou dados reais nesta tabela, pode parar de procurar em outras tabelas
                 if pessoas:
                     break
-
+                    
         except Exception:
             pass
 
         # Formatação
         def formatar(lista):
             if not lista: return "" 
+            # O separador que você gostou
             return "\n--------------------\n".join([f"• {x}" for x in lista])
 
         row = {}
