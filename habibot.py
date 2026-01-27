@@ -1817,8 +1817,16 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
-        # Pausa mínima para carregamento
-        time.sleep(1.5)
+        # --- MUDANÇA 1: ESPERA INTELIGENTE ---
+        # Em vez de dormir, espera até o texto da primeira pergunta aparecer
+        print("⏳ Aguardando carregamento das perguntas...")
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: "responsável pela unidade" in d.page_source.lower() or 
+                          "pessoa negra" in d.page_source.lower()
+            )
+        except:
+            print("⚠️ ALERTA: O questionário demorou demais ou está vazio.")
         
         saida: dict[str, str] = {}
         
@@ -1837,40 +1845,52 @@ class ExtratorHabibot:
         }
 
         try:
-            # Pega TODOS os elementos de texto da aba de uma vez
-            # Isso é infalível: se o texto tá na tela, ele vem pra cá.
-            elementos_texto = self.driver.find_elements(By.CSS_SELECTOR, "label, span, div, p, h4, h5, h6")
-            
             for palavra_chave, pergunta_completa in mapa_perguntas.items():
                 resposta = ""
-                elemento_encontrado = None
                 
-                # Passo 1: Acha onde está a pergunta
-                for el in elementos_texto:
-                    if not el.is_displayed(): continue
-                    texto = (el.text or "").lower()
-                    if palavra_chave.lower() in texto:
-                        elemento_encontrado = el
-                        break
+                # --- MUDANÇA 2: BUSCA POR XPATH DIRETO ---
+                # Procura qualquer elemento que tenha o texto da pergunta
+                xpath = f"//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{palavra_chave.lower()}')]"
+                elementos = self.driver.find_elements(By.XPATH, xpath)
                 
-                if elemento_encontrado:
-                    # Passo 2: Acha a resposta perto da pergunta
-                    # Procura em 4 níveis acima (pai, avô, bisavô...)
-                    ancestral = elemento_encontrado
-                    for _ in range(4):
+                # Filtra apenas elementos visíveis
+                elementos = [el for el in elementos if el.is_displayed()]
+
+                for el in elementos:
+                    # Varre os ancestrais (Pai, Avô...) procurando a resposta perto da pergunta
+                    ancestral = el
+                    for _ in range(4): # Sobe até 4 níveis na hierarquia
                         try:
                             ancestral = ancestral.find_element(By.XPATH, "./..")
                             
-                            # Tenta achar Radio Button marcado
-                            radios = ancestral.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked")
-                            if radios:
-                                lbl = radios[0].find_element(By.XPATH, "./following-sibling::label")
-                                txt = self._texto_limpo(lbl.text)
-                                if txt: 
+                            # A) Tenta Radio Button ou Checkbox Marcado
+                            inputs = ancestral.find_elements(By.CSS_SELECTOR, "input:checked")
+                            for inp in inputs:
+                                # Tenta pegar o label DEPOIS do input
+                                try:
+                                    lbl = inp.find_element(By.XPATH, "./following-sibling::label")
+                                    txt = self._texto_limpo(lbl.text)
+                                    if txt: resposta = txt; break
+                                except: pass
+                                
+                                # Tenta pegar o valor (value="Sim")
+                                if not resposta:
+                                    val = inp.get_attribute("value")
+                                    if val and val.lower() in ['sim', 'nao', 'não']:
+                                        resposta = val
+                                        break
+                            if resposta: break
+
+                            # B) Tenta Campo Select (Lista Suspensa)
+                            selects = ancestral.find_elements(By.TAG_NAME, "select")
+                            for s in selects:
+                                txt = self.driver.execute_script("return arguments[0].options[arguments[0].selectedIndex].text;", s)
+                                if txt and "selecione" not in txt.lower():
                                     resposta = txt
                                     break
+                            if resposta: break
                             
-                            # Tenta achar Texto "Sim/Não" solto
+                            # C) Tenta Texto "Sim/Não" solto no HTML (Span, Div, Strong)
                             if "sim" in ancestral.text.lower() or "não" in ancestral.text.lower():
                                 linhas = ancestral.text.split('\n')
                                 for l in linhas:
@@ -1878,14 +1898,20 @@ class ExtratorHabibot:
                                     if l in ['sim', 'não', 'nao']:
                                         resposta = l.capitalize().replace('nao', 'Não')
                                         break
-                            
                             if resposta: break
+
                         except: pass
-                        
+                    
+                    if resposta: break
+
                 if resposta:
-                    # Salva nas duas chaves (normalizada e schema)
+                    # Normaliza e Salva
+                    if resposta.lower() == 'nao': resposta = 'Não'
+                    
+                    # Salva usando a chave normalizada
                     saida[_norm_texto_chave(pergunta_completa)] = resposta
                     
+                    # Salva também com a chave exata do Schema para o Excel
                     chave_schema = ""
                     for p_schema in COL_SPECS:
                         if p_schema.aba == 'Questionário' and palavra_chave in p_schema.campo.lower():
@@ -1895,7 +1921,7 @@ class ExtratorHabibot:
                         saida[_col_key('Questionário', 'Perguntas', chave_schema)] = resposta
 
         except Exception as e:
-            print(f"Erro questionário: {e}")
+            print(f"Erro ao ler questionário: {e}")
 
         return saida
 
