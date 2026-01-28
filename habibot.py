@@ -1815,34 +1815,58 @@ class ExtratorHabibot:
         return dados
 
     def extrair_questionario_mapa(self) -> dict[str, str]:
-        """
-        Extrai questionário de forma determinística via JS.
-        Substitui a lógica antiga.
-        """
-        if not self.clicar_aba('Questionário'):
-            return {}
-        
-        # Pequena pausa para garantir que o JS vai achar os elementos
-        time.sleep(1.0)
+        """Extrai o Questionário de forma determinística e robusta via JS.
 
-        # Script JS Determinístico (O mesmo que funcionou no seu teste)
+        Retorna:
+          dict chave_normalizada -> resposta (Sim/Não/outro)
+        Recursos:
+          - heurísticas robustas para inputs e controles customizados
+          - fallback por iframes (tenta cada iframe se nada for encontrado no documento principal)
+          - preenche chaves do COL_SPECS e a chave agregada 'Respostas do Questionário'
+          - logs via self._log_acao quando disponível
+        """
+        # log inicial
+        try:
+            self._log_acao('EXTRAIR_QUESTIONARIO', detalhe='iniciando', ok=True)
+        except:
+            pass
+
+        if not self.clicar_aba('Questionário'):
+            try:
+                self._log_acao('EXTRAIR_QUESTIONARIO', detalhe='aba não encontrada', ok=False)
+            except:
+                pass
+            return {}
+
+        # pequena espera para o render da aba
+        time.sleep(0.8)
+
         js = r"""
         const out = [];
         const questions = Array.from(document.querySelectorAll('div.question, .question'));
-        function textOf(el){
-            try { return (el && (el.innerText||el.textContent||'')).toString().trim(); } catch(e){ return ''; }
-        }
-        for (const q of questions){
+        function textOf(el){ try { return (el && (el.innerText||el.textContent||'')).toString().trim(); } catch(e){ return ''; } }
+        function hasTruthyAttr(el, attrNames){
             try {
-                // pergunta
+                for (const a of attrNames){
+                    const v = (el.getAttribute(a) || '').toString().toLowerCase();
+                    if (v === 'true' || v === 'checked' || v === '1' || v === 'on') return true;
+                }
+            } catch(e){}
+            return false;
+        }
+        for (let qi=0; qi<questions.length; qi++){
+            const q = questions[qi];
+            try {
+                // heading
                 let heading = '';
                 const h = q.querySelector('h6,h5,h4,label');
                 heading = textOf(h) || textOf(q).split('\n')[0] || '';
-                
-                // tenta achar input marcado DENTRO do container
-                let checked = q.querySelector("input[type='radio']:checked, input[type='checkbox']:checked");
+                if (!heading) heading = `Pergunta #${qi+1}`;
+
                 let chosen = null;
-                
+
+                // 1) procura input marcado explicitamente dentro do container
+                let checked = q.querySelector("input[type='radio']:checked, input[type='checkbox']:checked");
                 if (checked){
                     const id = checked.id || '';
                     let label = null;
@@ -1852,121 +1876,191 @@ class ExtratorHabibot:
                         let sib = checked.nextElementSibling;
                         if (sib && (sib.tagName||'').toLowerCase() === 'label') label = sib;
                     }
-                    chosen = {id: id, value: checked.value || '', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_checked'};
-                } else {
-                    // fallback: property checked
+                    chosen = { id: id, value: checked.value || '', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_checked' };
+                }
+
+                // 2) procura por property checked / aria-checked nos inputs do container
+                if (!chosen){
                     const inputs = Array.from(q.querySelectorAll("input[type='radio'], input[type='checkbox']"));
                     for (const inp of inputs){
                         try {
-                            if (inp.checked){
+                            if (inp.checked || hasTruthyAttr(inp, ['checked','aria-checked'])) {
                                 const id = inp.id || '';
                                 let label = id ? (q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']")) : null;
                                 if (!label) label = inp.closest('label');
-                                if (!label) { let sib = inp.nextElementSibling; if (sib && (sib.tagName||'').toLowerCase()==='label') label = sib; }
-                                chosen = {id: id, value: inp.value || '', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_property_checked'};
+                                if (!label) { let s = inp.nextElementSibling; if (s && (s.tagName||'').toLowerCase()==='label') label = s; }
+                                chosen = { id: id, value: inp.value || '', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_property_checked' };
                                 break;
                             }
                         } catch(e){}
                     }
-                    
-                    // fallback global seguro
-                    if (!chosen){
-                        const names = [...new Set(inputs.map(i=>i.name).filter(n=>n))];
+                }
+
+                // 3) input[name]:checked global, mas aceita só se label for local/mesmo question
+                if (!chosen){
+                    try {
+                        const inputsLocal = Array.from(q.querySelectorAll("input"));
+                        const names = [...new Set(inputsLocal.map(i => i.name).filter(n=>n))];
                         for (const nm of names){
                             try {
                                 const g = document.querySelector("input[name='"+nm+"']:checked");
-                                if (g){
+                                if (g) {
                                     const id = g.id || '';
                                     let label = id ? (q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']")) : null;
                                     const ok = label && (q.contains(label) || (label.closest('.question') && label.closest('.question') === q));
-                                    if (ok){
-                                        chosen = {id:id, value: g.value || '', label: textOf(label), labelHTML: label.outerHTML, method: 'global_checked_but_local_label'};
+                                    if (ok) {
+                                        chosen = { id:id, value:g.value||'', label: textOf(label), labelHTML: label.outerHTML, method: 'global_checked_but_local_label' };
                                         break;
-                                    } else {
-                                        if (id){
-                                            const labGlobal = document.querySelector("label[for='"+id+"']");
-                                            if (labGlobal) {
-                                                chosen = {id:id, value:g.value||'', label:textOf(labGlobal), labelHTML: labGlobal.outerHTML, method:'global_checked_fallback'};
-                                                break;
-                                            }
+                                    } else if (id) {
+                                        const labg = document.querySelector("label[for='"+id+"']");
+                                        if (labg) {
+                                            chosen = { id:id, value:g.value||'', label: textOf(labg), labelHTML: labg.outerHTML, method: 'global_checked_fallback' };
+                                            break;
                                         }
                                     }
                                 }
                             } catch(e){}
                         }
-                    }
-                }
-                
-                // fallback visual (classes active)
-                if (!chosen){
-                    const labs = Array.from(q.querySelectorAll('label'));
-                    for (const L of labs){
-                        const cls = (L.className||'').toString().toLowerCase();
-                        if (cls.includes('active') || cls.includes('selected') || cls.includes('is-checked') || cls.includes('checked')){
-                            chosen = {id:'', value:'', label:textOf(L), labelHTML:L.outerHTML, method:'label_class_active'};
-                            break;
-                        }
-                    }
+                    } catch(e){}
                 }
 
-                out.push({heading: heading, chosen: chosen, rawLabels: Array.from(q.querySelectorAll('label')).map(l=>({text:textOf(l), html:l.outerHTML.slice(0,400)}))});
-            } catch(e){}
+                // 4) fallback visual: labels/botões com classes active/selected ou ícones marcados
+                if (!chosen){
+                    try {
+                        const labs = Array.from(q.querySelectorAll('label, button, .btn, .v-btn, .option, .radio, .choice'));
+                        for (const L of labs){
+                            try {
+                                if (!q.contains(L)) continue;
+                                const cls = (L.className||'').toString().toLowerCase();
+                                if (cls.includes('active') || cls.includes('selected') || cls.includes('is-checked') || cls.includes('checked') || cls.includes('btn--active') || cls.includes('v-btn--is-active')) {
+                                    const t = textOf(L);
+                                    chosen = { id:'', value:'', label: t, labelHTML: L.outerHTML, method: 'label_class_active' };
+                                    break;
+                                }
+                                // ícone marcado (svg/i) dentro do label
+                                const icon = L.querySelector('i, svg, .ri-checkbox-circle-fill, .ri-checkbox-fill');
+                                if (icon) {
+                                    const clsIcon = (icon.className||'').toString().toLowerCase();
+                                    if (clsIcon.includes('checked') || clsIcon.includes('fill')) {
+                                        const t = textOf(L);
+                                        chosen = { id:'', value:'', label: t, labelHTML: L.outerHTML, method: 'icon_marker' };
+                                        break;
+                                    }
+                                }
+                            } catch(e){}
+                        }
+                    } catch(e){}
+                }
+
+                // rawLabels
+                let rawLabels = [];
+                try { rawLabels = Array.from(q.querySelectorAll('label')).map(l => ({ text: textOf(l), html: (l.outerHTML||'').slice(0,400) })); } catch(e){ rawLabels = []; }
+
+                out.push({ heading: heading, chosen: chosen, rawLabels: rawLabels });
+            } catch(e){
+                // swallow per-question errors
+            }
         }
         return out;
         """
 
+        # tenta executar no documento principal
+        collected = []
         try:
-            collected = self.driver.execute_script(js)
+            collected = self.driver.execute_script(js) or []
         except Exception as e:
-            print(f"Erro ao executar JS do questionário: {e}")
+            try:
+                self._log_acao('EXTRAIR_QUESTIONARIO', detalhe=f'erro exec_js principal: {e}', ok=False)
+            except:
+                pass
             collected = []
 
-        # Processamento dos dados retornados pelo JS
+        # se nada coletado, tenta iterar iframes (fallback)
+        if not collected:
+            try:
+                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+            except:
+                iframes = []
+            for i_frame in (iframes or []):
+                try:
+                    self.driver.switch_to.frame(i_frame)
+                    time.sleep(0.12)
+                    tmp = []
+                    try:
+                        tmp = self.driver.execute_script(js) or []
+                    except:
+                        tmp = []
+                    # volta para main antes de decidir
+                    try:
+                        self.driver.switch_to.default_content()
+                    except:
+                        pass
+                    if tmp:
+                        collected = tmp
+                        break
+                except Exception:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except:
+                        pass
+                    continue
+
+        # processa resultados do JS
         saida: dict[str, str] = {}
-        
-        # Importante: COL_SPECS e _norm_texto_chave devem estar disponíveis no escopo global do habibot.py
-        # Se der erro de nome, certifique-se que eles estão importados ou definidos no topo do arquivo.
-        
-        for item in (collected or []):
-            heading = item.get('heading') or ''
-            chosen = item.get('chosen')
+        respostas_agregadas: list[str] = []
+
+        for idx, item in enumerate(collected or []):
+            heading = (item.get('heading') or '').strip() or f"Pergunta #{idx+1}"
+            chosen = item.get('chosen') or {}
             resp_text = ''
-            
-            if chosen and chosen.get('label'):
-                resp_text = chosen.get('label')
-            elif chosen and chosen.get('value'):
-                resp_text = chosen.get('value')
-            
-            # Normaliza Sim/Não
+            metodo = chosen.get('method') if isinstance(chosen, dict) else ''
+
+            if chosen and isinstance(chosen, dict):
+                if chosen.get('label'):
+                    resp_text = chosen.get('label') or ''
+                elif chosen.get('value'):
+                    resp_text = chosen.get('value') or ''
+
+            # normaliza Sim/Não
             rnorm = ''
             if resp_text:
                 rl = resp_text.strip().lower()
-                if rl in ('s','sim', 'true', '1'):
+                if rl in ('s', 'sim', 'true', '1', 'yes', 'y'):
                     rnorm = 'Sim'
-                elif rl in ('n','não','nao', 'false', '0'):
+                elif rl in ('n', 'não', 'nao', 'false', '0', 'no'):
                     rnorm = 'Não'
                 else:
                     rnorm = resp_text.strip().capitalize()
 
-            # Salva no dicionário usando a chave normalizada
-            chave = _norm_texto_chave(heading or '')
-            if chave:
-                saida[chave] = rnorm
-                
-                # Preenche também usando a chave exata do Schema (COL_SPECS) para o Excel
-                for p_schema in COL_SPECS:
-                    try:
-                        # Compara se é da aba Questionário e se o texto bate
-                        if p_schema.aba == 'Questionário' and p_schema.campo == heading:
+            # chave normalizada (fallback para index se vazio)
+            key_norm = _norm_texto_chave(heading)
+            if not key_norm:
+                key_norm = f"questionario_pergunta_{idx+1}"
+
+            saida[key_norm] = rnorm
+            respostas_agregadas.append(f"{heading} -> {rnorm} ({metodo or 'detected'})")
+
+            # preenche chaves do schema (COL_SPECS)
+            for p_schema in COL_SPECS:
+                try:
+                    if p_schema.aba == 'Questionário':
+                        if p_schema.campo == heading:
                             saida[p_schema.key] = rnorm
                             break
-                        
-                        # Fallback: Tenta bater pela chave normalizada se o texto exato falhar
-                        if p_schema.aba == 'Questionário' and _norm_texto_chave(p_schema.campo) == chave:
+                        if _norm_texto_chave(p_schema.campo) == key_norm:
                             saida[p_schema.key] = rnorm
                             break
-                    except:
-                        pass
+                except:
+                    continue
+
+        # chave agregada
+        if respostas_agregadas:
+            saida['Respostas do Questionário'] = "\n".join(respostas_agregadas)
+
+        try:
+            self._log_acao('EXTRAIR_QUESTIONARIO', detalhe=f'itens={len(collected)}', ok=True)
+        except:
+            pass
 
         return saida
 
