@@ -1817,129 +1817,136 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
-        # Espera visual para garantir que os campos pintaram na tela
+        # Pausa para garantir que carregou
         time.sleep(2.0)
         
         saida: dict[str, str] = {}
         
-        # Mapa de busca (Palavra-chave -> Nome da Coluna no Excel)
-        # Atenção: O JavaScript vai usar essas chaves para caçar os textos na tela
-        mapa_js = {
-            'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
-            'pessoa negra': '2. Há pessoa negra na composição familiar?',
-            'pessoa com deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
-            'idoso na composição': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
-            'criança ou adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'câncer ou doença': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
-            'violência doméstica': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
-            'indígenas ou quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'área de risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
-            'contrato distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
-            'Redes Socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
+        # Palavras-chave para identificar a pergunta quando acharmos uma resposta marcada
+        mapa_reverso = {
+            'responsável': '1. A mulher é a responsável pela unidade familiar?',
+            'negra': '2. Há pessoa negra na composição familiar?',
+            'deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
+            'idoso': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
+            'criança': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            'adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            'câncer': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
+            'violência': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
+            'indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            'quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            'risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
+            'distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
+            'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
         }
 
         try:
-            # --- SCRIPT JS "ESPIÃO" ---
-            # Esse script roda dentro do Chrome e retorna o JSON com as respostas
-            script = """
-            var mapa = arguments[0];
-            var resultados = {};
+            # 1. VERIFICAÇÃO DE IFRAME (MUITO IMPORTANTE)
+            # Se o questionário estiver numa "janela dentro da janela", o robô normal não vê.
+            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+            usou_iframe = False
+            if iframes:
+                # Tenta entrar no primeiro iframe que achar
+                try:
+                    self.driver.switch_to.frame(iframes[0])
+                    usou_iframe = True
+                except: pass
 
+            # 2. SCRIPT DE BUSCA REVERSA (JS)
+            # Encontra tudo que está MARCADO e descobre o texto perto
+            script = """
+            var resultados = {};
+            
             function limpar(txt) {
-                return (txt || "").replace(/\\s+/g, " ").trim();
+                return (txt || "").replace(/\\s+/g, " ").trim().toLowerCase();
             }
 
-            // Para cada pergunta do nosso mapa
-            for (var key in mapa) {
-                var textoPergunta = key.toLowerCase();
-                var nomeCompleto = mapa[key];
-                var respostaEncontrada = "";
-
-                // 1. Busca todos os elementos que contêm o texto da pergunta
-                var xpath = "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + textoPergunta + "')]";
-                var iterator = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-
-                // Tenta achar a resposta perto de cada ocorrência do texto
-                for (var i = 0; i < iterator.snapshotLength; i++) {
-                    var el = iterator.snapshotItem(i);
-                    
-                    // Ignora elementos invisíveis ou scripts
-                    if (el.offsetParent === null || el.tagName === 'SCRIPT') continue;
-                    
-                    // Sobe na hierarquia (Pai, Avô, Bisavô) procurando Inputs Marcados
-                    var container = el;
-                    for (var nivel = 0; nivel < 5; nivel++) { 
-                        if (!container) break;
-
-                        // A) Procura Radio/Checkbox CHECADO
-                        var input = container.querySelector("input:checked");
-                        if (input) {
-                            // Tenta achar o label do input
-                            var label = container.querySelector("label[for='" + input.id + "']");
-                            if (label) respostaEncontrada = label.innerText;
-                            else if (input.parentElement.tagName === 'LABEL') respostaEncontrada = input.parentElement.innerText;
-                            else respostaEncontrada = input.value; // Se não tem label, pega o value (ex: "Sim")
-                            
-                            if (respostaEncontrada) break;
-                        }
-
-                        // B) Procura Select (Lista Suspensa) com valor selecionado
-                        var sel = container.querySelector("select");
-                        if (sel && sel.selectedIndex >= 0) {
-                            var textoSel = sel.options[sel.selectedIndex].text;
-                            if (!textoSel.toLowerCase().includes("selecione")) {
-                                respostaEncontrada = textoSel;
-                                break;
-                            }
-                        }
-                        
-                        // C) Procura Texto "Sim" ou "Não" escrito solto na tela (gambiarra visual)
-                        var textoPuro = container.innerText.toLowerCase();
-                        // Remove o texto da própria pergunta para não confundir
-                        textoPuro = textoPuro.replace(textoPergunta, ""); 
-                        
-                        if (textoPuro.includes("sim") && !textoPuro.includes("não")) { respostaEncontrada = "Sim"; break; }
-                        if (textoPuro.includes("não") || textoPuro.includes("nao")) { respostaEncontrada = "Não"; break; }
-
-                        // Sobe para o pai
-                        container = container.parentElement;
+            // A) Pega todos os Inputs MARCADOS (Radio/Checkbox)
+            var inputs = document.querySelectorAll("input:checked");
+            for (var i = 0; i < inputs.length; i++) {
+                var input = inputs[i];
+                var val = input.value;
+                
+                // Tenta achar o texto da pergunta subindo na hierarquia
+                var ancestral = input.parentElement;
+                var textoEncontrado = "";
+                
+                // Sobe até 5 níveis procurando texto relevante
+                for (var j=0; j<5; j++) {
+                    if (!ancestral) break;
+                    var txt = limpar(ancestral.innerText);
+                    // Se o texto for longo o suficiente para ser uma pergunta (> 15 chars)
+                    if (txt.length > 15) {
+                        textoEncontrado = txt;
+                        break;
                     }
-                    if (respostaEncontrada) break;
+                    ancestral = ancestral.parentElement;
                 }
                 
-                if (respostaEncontrada) {
-                    resultados[nomeCompleto] = limpar(respostaEncontrada);
+                if (textoEncontrado) {
+                    resultados[textoEncontrado] = val;
                 }
             }
+            
+            // B) Pega todos os Selects (Listas) com valor
+            var selects = document.querySelectorAll("select");
+            for (var i = 0; i < selects.length; i++) {
+                var sel = selects[i];
+                if (sel.selectedIndex >= 0) {
+                    var opt = sel.options[sel.selectedIndex];
+                    var val = opt.text;
+                    if (!val.toLowerCase().includes("selecione")) {
+                        var ancestral = sel.parentElement;
+                        var textoEncontrado = "";
+                        for (var j=0; j<5; j++) {
+                            if (!ancestral) break;
+                            var txt = limpar(ancestral.innerText);
+                            if (txt.length > 15) {
+                                textoEncontrado = txt;
+                                break;
+                            }
+                            ancestral = ancestral.parentElement;
+                        }
+                        if (textoEncontrado) resultados[textoEncontrado] = val;
+                    }
+                }
+            }
+            
             return resultados;
             """
             
-            # Executa o script e recebe o dicionário pronto
-            dados_js = self.driver.execute_script(script, mapa_js)
+            # Roda o script e pega o dicionário { "Texto da Pergunta": "Sim/Não" }
+            dados_brutos = self.driver.execute_script(script)
             
-            # Processa o retorno
-            if dados_js:
-                for pergunta_full, resp in dados_js.items():
-                    # Normaliza Sim/Não
-                    r_lower = resp.lower()
-                    if r_lower in ['1', 's', 'true', 'on']: resp = 'Sim'
-                    elif r_lower in ['0', 'n', 'false', 'off']: resp = 'Não'
+            # Volta do Iframe se tiver entrado
+            if usou_iframe:
+                self.driver.switch_to.default_content()
+
+            # 3. CRUZA OS DADOS COM O SEU EXCEL
+            if dados_brutos:
+                for texto_site, resposta_site in dados_brutos.items():
+                    # Normaliza a resposta (s/n -> Sim/Não)
+                    resp_lower = str(resposta_site).lower()
+                    resp_final = resposta_site
+                    if resp_lower in ['on', 'true', '1', 's', 'sim']: resp_final = 'Sim'
+                    elif resp_lower in ['off', 'false', '0', 'n', 'nao', 'não']: resp_final = 'Não'
                     
-                    # Salva no dicionário de saída com as chaves corretas
-                    saida[_norm_texto_chave(pergunta_full)] = resp
-                    
-                    # Salva também com a chave do Schema (para o Excel gravar)
-                    chave_schema = ""
-                    for p_schema in COL_SPECS:
-                        # Busca parcial para casar o nome completo
-                        if p_schema.aba == 'Questionário' and pergunta_full[:20] in p_schema.campo:
-                            chave_schema = p_schema.campo
+                    # Tenta descobrir qual é a pergunta do Excel baseada na palavra-chave
+                    for palavra_chave, nome_coluna_excel in mapa_reverso.items():
+                        if palavra_chave in texto_site:
+                            # ACHOU! Salva nas chaves corretas
+                            saida[_norm_texto_chave(nome_coluna_excel)] = resp_final
+                            
+                            # Salva também com a chave interna do Schema (para garantir que grave no Excel)
+                            for p_schema in COL_SPECS:
+                                if p_schema.aba == 'Questionário' and nome_coluna_excel == p_schema.campo:
+                                    saida[p_schema.key] = resp_final
                             break
-                    if chave_schema:
-                        saida[_col_key('Questionário', 'Perguntas', chave_schema)] = resp
 
         except Exception as e:
-            print(f"Erro na extração JS do questionário: {e}")
+            print(f"Erro critico questionario: {e}")
+            if usou_iframe:
+                try: self.driver.switch_to.default_content()
+                except: pass
 
         return saida
 
