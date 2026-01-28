@@ -8,7 +8,10 @@ print("🔧 INICIANDO MODO DE TESTE (LÓGICA AVANÇADA + DEBUG)...")
 def nova_logica_questionario(self) -> dict:
     """
     Extração do Questionário com varredura DOM em ordem document (proximidade) e debug.
-    Retorna dict com pergunta completa -> resposta detectada (e no Python imprimimos a info crua).
+    Melhorias:
+      - procura label associado preferencialmente DENTRO do container da pergunta (não global)
+      - fallback ordenado: container.querySelector -> input.closest('label') -> sibling -> document.querySelector
+      - imprime RAW JS para depuração
     """
     if not self.clicar_aba('Questionário'):
         return {}
@@ -29,13 +32,12 @@ def nova_logica_questionario(self) -> dict:
         'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
     }
 
-    # JS que faz a varredura DOM a partir do nó da pergunta (document order) procurando elementos indicativos de seleção.
+    # JS que faz a varredura DOM a partir do nó da pergunta (document order traversal)
     script_js = r"""
     const mapa = arguments[0];
 
     function clean(s){ return (s||'').trim().toLowerCase(); }
 
-    // In-order DOM next node (document order traversal)
     function nextNode(node) {
         if (!node) return null;
         if (node.firstElementChild) return node.firstElementChild;
@@ -54,6 +56,45 @@ def nova_logica_questionario(self) -> dict:
         } catch(e){ return true; }
     }
 
+    function findLocalLabelForInput(container, inp) {
+        // Tentativas ordenadas de achar label relacionalmente dentro do container/ancestors
+        try {
+            const id = inp.id || '';
+            if (id) {
+                // 1) label within container
+                try {
+                    const lab = container.querySelector("label[for='"+id+"']");
+                    if (lab) return lab;
+                } catch(e){}
+                // 2) input.closest('label')
+                try {
+                    const lab2 = inp.closest('label');
+                    if (lab2) return lab2;
+                } catch(e){}
+                // 3) sibling label (next/previous)
+                try {
+                    let s = inp.nextElementSibling;
+                    if (s && s.tagName.toLowerCase()==='label') return s;
+                    s = inp.previousElementSibling;
+                    if (s && s.tagName.toLowerCase()==='label') return s;
+                } catch(e){}
+                // 4) label inside the closest form or question ancestor
+                try {
+                    const ancestor = container.closest('form') || container.closest('.question') || container;
+                    if (ancestor) {
+                        const lab3 = ancestor.querySelector("label[for='"+id+"']");
+                        if (lab3) return lab3;
+                    }
+                } catch(e){}
+                // 5) global fallback (last resort)
+                try {
+                    return document.querySelector("label[for='"+id+"']");
+                } catch(e){}
+            }
+        } catch(e){}
+        return null;
+    }
+
     function detectInNode(n) {
         try {
             // 1) inputs (radio/checkbox) near the node
@@ -61,22 +102,32 @@ def nova_logica_questionario(self) -> dict:
             for (let inp of inputs){
                 try {
                     if (inp.checked){
-                        // try find label text
-                        const id = inp.id || '';
-                        if (id){
-                            const lab = document.querySelector("label[for='"+id+"']");
-                            if (lab && clean(lab.innerText)) return {method:'input_checked_label', text:clean(lab.innerText), html:lab.outerHTML};
+                        // try find label text LOCAL to the container
+                        const lab = findLocalLabelForInput(n, inp);
+                        if (lab) {
+                            // ensure label is within same question/container (or at least visible near)
+                            if (n.contains(lab) || (lab.closest('.question') && lab.closest('.question') === n.closest('.question'))) {
+                                return {method:'input_checked_label', text:clean(lab.innerText || lab.textContent), html:lab.outerHTML};
+                            }
                         }
-                        // sibling label
-                        let sib = inp.nextElementSibling;
-                        if (sib && clean(sib.innerText)) return {method:'input_checked_sibling', text:clean(sib.innerText), html:sib.outerHTML};
+                        // sibling next label
+                        try {
+                            const sib = inp.nextElementSibling;
+                            if (sib && clean(sib.innerText)) return {method:'input_checked_sibling', text:clean(sib.innerText), html:sib.outerHTML};
+                        } catch(e){}
                         return {method:'input_checked', text:'sim', html:inp.outerHTML};
                     }
                     const ar = (inp.getAttribute('aria-checked')||'').toString().toLowerCase();
                     const ch = (inp.getAttribute('checked')||'').toString().toLowerCase();
                     if (ar==='true' || ch==='checked' || ch==='true') {
-                        let sib = inp.nextElementSibling;
-                        if (sib && clean(sib.innerText)) return {method:'input_attr_checked', text:clean(sib.innerText), html:sib.outerHTML};
+                        const lab = findLocalLabelForInput(n, inp);
+                        if (lab && (n.contains(lab) || (lab.closest('.question') && lab.closest('.question') === n.closest('.question')))) {
+                            return {method:'input_attr_checked', text:clean(lab.innerText || lab.textContent), html:lab.outerHTML};
+                        }
+                        try {
+                            const sib = inp.nextElementSibling;
+                            if (sib && clean(sib.innerText)) return {method:'input_attr_checked_sibling', text:clean(sib.innerText), html:sib.outerHTML};
+                        } catch(e){}
                         return {method:'input_attr_checked', text:'sim', html:inp.outerHTML};
                     }
                 } catch(e){}
@@ -85,7 +136,6 @@ def nova_logica_questionario(self) -> dict:
             // 2) look for elements that look like option buttons and check active classes
             const candidates = Array.from(n.querySelectorAll('button, label, .btn, .v-btn, .option, .radio, .choice, .option-item'));
             if (candidates.length >= 1){
-                // if candidates contain explicit 'sim'/'não' text, detect which has active class
                 let textMap = [];
                 for (let c of candidates){
                     try {
@@ -93,16 +143,16 @@ def nova_logica_questionario(self) -> dict:
                         textMap.push({el:c, text:t, cls:(c.className||'').toString().toLowerCase()});
                     } catch(e){}
                 }
-                // find active one
+                // find active one inside the container only
                 for (let it of textMap){
+                    if (!n.contains(it.el)) continue;
                     if (it.cls.includes('active') || it.cls.includes('selected') || it.cls.includes('checked') || it.cls.includes('is-checked') || it.cls.includes('btn--active') || it.cls.includes('v-btn--is-active') || it.cls.includes('bg-primary') ){
                         return {method:'class_active', text:it.text || 'sim', html:it.el.outerHTML};
                     }
                 }
-                // if no active, but there are exactly two with 'sim' and 'não' texts, prefer the one whose element has an inner marker (e.g., an <i> with class showing selection)
-                const simNao = textMap.filter(x => x.text==='sim' || x.text==='não' || x.text==='nao' || x.text==='s' || x.text==='n');
+                // if no active, but there are exactly two with 'sim' and 'não' texts, attempt icon-based detection within container
+                const simNao = textMap.filter(x => n.contains(x.el) && (x.text==='sim' || x.text==='não' || x.text==='nao' || x.text==='s' || x.text==='n'));
                 if (simNao.length === 2){
-                    // check for inner elements (icons) with selection marker
                     for (let it of simNao){
                         try {
                             const icon = it.el.querySelector('i, svg, span');
@@ -146,10 +196,9 @@ def nova_logica_questionario(self) -> dict:
             const containers = findContainers(chave);
             let found = null;
             for (let c of containers){
-                // first, try detect directly in container
                 const d = detectInNode(c);
                 if (d){ found = d; break; }
-                // if not found, scan forward in doc order a few nodes
+                // scan forward a few nodes in document order
                 let cur = c;
                 for (let i=0;i<40 && cur;i++){
                     cur = nextNode(cur);
@@ -163,7 +212,6 @@ def nova_logica_questionario(self) -> dict:
                 if (found) break;
             }
             if (found) {
-                // normalize small text to Portuguese Sim/Não
                 const txt = (found.text||'').toString().trim().toLowerCase();
                 let norm = found.text;
                 if (/^s($|im)/.test(txt)) norm = 'Sim';
@@ -215,7 +263,7 @@ def nova_logica_questionario(self) -> dict:
                     pass
                 continue
 
-    # Imprime o resultado cru (útil para depuração)
+    # Imprime o resultado cru para debug
     print("\n--- RAW JS Questionário Results ---")
     try:
         import json
