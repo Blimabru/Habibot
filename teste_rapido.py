@@ -3,33 +3,18 @@ import re
 from selenium.webdriver.common.by import By
 from habibot import HabibotBot, ExtratorHabibot, COL_SPECS, _col_key, _norm_texto_chave
 
-print("🔧 INICIANDO MODO DE TESTE (LÓGICA POSICIONAL MELHORADA)...")
+print("🔧 INICIANDO MODO DE TESTE (LÓGICA AVANÇADA + DEBUG)...")
 
-# ==============================================================================
-# LÓGICA MELHORADA PARA EXTRACAO DO QUESTIONÁRIO
-# ==============================================================================
 def nova_logica_questionario(self) -> dict:
     """
-    Extração resiliente do Questionário para testes rápidos.
-
-    Estratégia:
-      - Clica na aba "Questionário".
-      - Tenta extrair no contexto atual (document) usando heurísticas DOM:
-          * encontra nós que contenham o trecho-chave (case-insensitive)
-          * procura container próximo (fieldset, .form-group, parent)
-          * detecta radios (checked / aria-checked / atributo checked)
-          * tenta labels por for/id, ancestor label, following-sibling label
-          * fallback para botões com classe active/selected
-      - Se nada for encontrado no contexto atual, itera por iframes e repete a extração em cada um.
-      - Monta o dicionário com chaves normalizadas e também preenche as chaves do schema (COL_SPECS).
-      - Retorna dict[normalized_question -> resposta]
+    Extração do Questionário com varredura DOM em ordem document (proximidade) e debug.
+    Retorna dict com pergunta completa -> resposta detectada (e no Python imprimimos a info crua).
     """
     if not self.clicar_aba('Questionário'):
         return {}
 
-    time.sleep(0.6)  # pequena espera para render
+    time.sleep(0.6)  # espera rápida para render
 
-    # mapa de busca (trecho curto -> pergunta completa do schema)
     mapa = {
         'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
         'pessoa negra': '2. Há pessoa negra na composição familiar?',
@@ -44,175 +29,184 @@ def nova_logica_questionario(self) -> dict:
         'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
     }
 
-    saida = {}
-
-    # JS utilitário que roda no contexto atual e retorna dicionário pergunta->resposta (quando possível)
-    script_js = """
+    # JS que faz a varredura DOM a partir do nó da pergunta (document order) procurando elementos indicativos de seleção.
+    script_js = r"""
     const mapa = arguments[0];
 
-    function clean(s) { return (s || '').trim().toLowerCase(); }
+    function clean(s){ return (s||'').trim().toLowerCase(); }
 
-    function findContainersContaining(chave) {
-        // procura nós sem filhos (leaf nodes) cujo texto contenha a chave
-        const nodes = Array.from(document.querySelectorAll('body *'));
-        const matches = [];
-        for (let n of nodes) {
-            try {
-                if (!n.offsetParent && n.tagName !== 'LABEL') continue; // elemento não visível
-            } catch(e) {}
-            const txt = clean(n.innerText || n.textContent || '');
-            if (txt && txt.includes(chave)) {
-                matches.push(n);
-            }
+    // In-order DOM next node (document order traversal)
+    function nextNode(node) {
+        if (!node) return null;
+        if (node.firstElementChild) return node.firstElementChild;
+        let n = node;
+        while (n) {
+            if (n.nextElementSibling) return n.nextElementSibling;
+            n = n.parentElement;
         }
-        // para cada nó encontrado, retorna um container razoável (fieldset / .form-group / parent)
-        const containers = [];
-        for (let n of matches) {
-            let c = n.closest('fieldset') || n.closest('.form-group') || n.closest('.row') || n.parentElement;
-            if (c) containers.push(c);
-            else containers.push(n);
-        }
-        return containers;
-    }
-
-    function detectAnswerInContainer(container) {
-        // 1) radios/checkboxes
-        const inputs = Array.from(container.querySelectorAll("input[type='radio'], input[type='checkbox']"));
-        if (inputs.length >= 1) {
-            // prefer checked input
-            for (let i=0;i<inputs.length;i++) {
-                try {
-                    if (inputs[i].checked) {
-                        // tenta pegar label associado
-                        const id = inputs[i].id || '';
-                        if (id) {
-                            const lab = container.querySelector("label[for='" + id + "']");
-                            if (lab && clean(lab.innerText)) return clean(lab.innerText);
-                        }
-                        // tenta next sibling label
-                        let sib = inputs[i].nextElementSibling;
-                        if (sib && clean(sib.innerText)) return clean(sib.innerText);
-                        return 'sim';
-                    }
-                    const ch = (inputs[i].getAttribute('aria-checked') || inputs[i].getAttribute('checked') || '').toString().toLowerCase();
-                    if (ch === 'true' || ch === 'checked' || ch === '1' || ch === 'on') {
-                        let sib = inputs[i].nextElementSibling;
-                        if (sib && clean(sib.innerText)) return clean(sib.innerText);
-                        return 'sim';
-                    }
-                } catch(e){}
-            }
-            // se nenhum marcado, tenta inferir por posição: primeiro=true, segundo=false
-            if (inputs.length >= 2) {
-                // tenta ler labels dos dois primeiros
-                try {
-                    let l0 = inputs[0].nextElementSibling;
-                    let l1 = inputs[1].nextElementSibling;
-                    const t0 = l0 ? clean(l0.innerText) : '';
-                    const t1 = l1 ? clean(l1.innerText) : '';
-                    if (t0 && (t0==='sim' || t0==='não' || t0==='nao')) {
-                        // se text labels existirem, mas nenhum marcado, não sabemos; retorna null
-                    } else {
-                        // fallback positional: se inputs[0] existimos consideramos como opção positiva
-                        return null;
-                    }
-                } catch(e){}
-            }
-        }
-
-        // 2) botões/labels com classes active/selected
-        const btns = Array.from(container.querySelectorAll('button, .btn, .v-btn, label, a, .option'));
-        for (let b of btns) {
-            try {
-                const cls = (b.className || '').toLowerCase();
-                if (cls.includes('active') || cls.includes('selected') || cls.includes('checked') || cls.includes('is-checked') || cls.includes('btn--active') || cls.includes('v-btn--is-active')) {
-                    const t = clean(b.innerText || b.textContent || '');
-                    if (t) return t;
-                }
-            } catch(e){}
-        }
-
-        // 3) procura texto explícito 'sim'/'não' dentro do container (próximo à pergunta)
-        try {
-            const txt = clean(container.innerText || container.textContent || '');
-            const m = txt.match(/\\b(sim|s|não|nao|n)\\b/);
-            if (m) return m[1];
-        } catch(e){}
-
-        // 4) fallback: tenta labels dentro do container que contenham 'sim' ou 'não'
-        try {
-            const labs = Array.from(container.querySelectorAll('label'));
-            for (let l of labs) {
-                const t = clean(l.innerText || '');
-                if (t==='sim' || t==='não' || t==='nao') return t;
-            }
-        } catch(e){}
-
         return null;
     }
 
-    const resultados = {};
-    for (const chave in mapa) {
+    function elementVisible(el){
         try {
-            const containers = findContainersContaining(chave);
-            let found = false;
-            for (const c of containers) {
-                const ans = detectAnswerInContainer(c);
-                if (ans !== null && ans !== undefined && ans !== '') {
-                    // normaliza resposta para Sim/Não em português quando aplicável
-                    const a = (ans || '').toString().trim();
-                    if (/^s($|im\\b)/i.test(a)) resultados[mapa[chave]] = 'Sim';
-                    else if (/^n($|ão\\b|ao\\b)/i.test(a)) resultados[mapa[chave]] = 'Não';
-                    else resultados[mapa[chave]] = a;
-                    found = true;
-                    break;
-                }
+            const rect = el.getBoundingClientRect();
+            return !(rect.width === 0 && rect.height === 0);
+        } catch(e){ return true; }
+    }
+
+    function detectInNode(n) {
+        try {
+            // 1) inputs (radio/checkbox) near the node
+            const inputs = Array.from(n.querySelectorAll("input[type='radio'], input[type='checkbox']"));
+            for (let inp of inputs){
+                try {
+                    if (inp.checked){
+                        // try find label text
+                        const id = inp.id || '';
+                        if (id){
+                            const lab = document.querySelector("label[for='"+id+"']");
+                            if (lab && clean(lab.innerText)) return {method:'input_checked_label', text:clean(lab.innerText), html:lab.outerHTML};
+                        }
+                        // sibling label
+                        let sib = inp.nextElementSibling;
+                        if (sib && clean(sib.innerText)) return {method:'input_checked_sibling', text:clean(sib.innerText), html:sib.outerHTML};
+                        return {method:'input_checked', text:'sim', html:inp.outerHTML};
+                    }
+                    const ar = (inp.getAttribute('aria-checked')||'').toString().toLowerCase();
+                    const ch = (inp.getAttribute('checked')||'').toString().toLowerCase();
+                    if (ar==='true' || ch==='checked' || ch==='true') {
+                        let sib = inp.nextElementSibling;
+                        if (sib && clean(sib.innerText)) return {method:'input_attr_checked', text:clean(sib.innerText), html:sib.outerHTML};
+                        return {method:'input_attr_checked', text:'sim', html:inp.outerHTML};
+                    }
+                } catch(e){}
             }
-            // se containers vazios, tenta varredura por proximidade textual simples: procura 'chave' e pega janela de texto
-            if (!found) {
-                const bodytxt = clean(document.body.innerText || document.body.textContent || '');
-                const idx = bodytxt.indexOf(chave);
-                if (idx !== -1) {
-                    const window = bodytxt.substring(idx, idx + 400);
-                    const m = window.match(/\\b(sim|s|não|nao|n)\\b/i);
-                    if (m) {
-                        const g = m[1].toLowerCase();
-                        if (g==='s' || g==='sim') resultados[mapa[chave]] = 'Sim';
-                        else resultados[mapa[chave]] = 'Não';
+
+            // 2) look for elements that look like option buttons and check active classes
+            const candidates = Array.from(n.querySelectorAll('button, label, .btn, .v-btn, .option, .radio, .choice, .option-item'));
+            if (candidates.length >= 1){
+                // if candidates contain explicit 'sim'/'não' text, detect which has active class
+                let textMap = [];
+                for (let c of candidates){
+                    try {
+                        const t = clean(c.innerText || c.textContent || '');
+                        textMap.push({el:c, text:t, cls:(c.className||'').toString().toLowerCase()});
+                    } catch(e){}
+                }
+                // find active one
+                for (let it of textMap){
+                    if (it.cls.includes('active') || it.cls.includes('selected') || it.cls.includes('checked') || it.cls.includes('is-checked') || it.cls.includes('btn--active') || it.cls.includes('v-btn--is-active') || it.cls.includes('bg-primary') ){
+                        return {method:'class_active', text:it.text || 'sim', html:it.el.outerHTML};
+                    }
+                }
+                // if no active, but there are exactly two with 'sim' and 'não' texts, prefer the one whose element has an inner marker (e.g., an <i> with class showing selection)
+                const simNao = textMap.filter(x => x.text==='sim' || x.text==='não' || x.text==='nao' || x.text==='s' || x.text==='n');
+                if (simNao.length === 2){
+                    // check for inner elements (icons) with selection marker
+                    for (let it of simNao){
+                        try {
+                            const icon = it.el.querySelector('i, svg, span');
+                            if (icon){
+                                const cls = (icon.className||'').toString().toLowerCase();
+                                if (cls.includes('checked') || cls.includes('selected') || cls.includes('ri-checkbox-circle-fill') || cls.includes('v-icon--active')) {
+                                    return {method:'icon_checked', text:it.text, html:it.el.outerHTML};
+                                }
+                            }
+                        } catch(e){}
                     }
                 }
             }
+
+            // 3) find explicit 'sim' or 'não' text nodes inside n
+            try {
+                const bodytxt = clean(n.innerText || n.textContent || '');
+                const m = bodytxt.match(/\b(sim|s|não|nao|n)\b/i);
+                if (m) return {method:'text_near', text:m[1].toLowerCase(), html:n.outerHTML};
+            } catch(e){}
         } catch(e){}
+        return null;
     }
-    return resultados;
+
+    function findContainers(chave) {
+        const nodes = Array.from(document.querySelectorAll('div, section, fieldset, li, form, article, .question, .row, .form-group'));
+        const matches = [];
+        for (let n of nodes){
+            try {
+                if (!elementVisible(n)) continue;
+                const t = clean(n.innerText || n.textContent || '');
+                if (t && t.includes(chave)) matches.push(n);
+            } catch(e){}
+        }
+        return matches;
+    }
+
+    const results = {};
+    for (const chave in mapa){
+        try {
+            const containers = findContainers(chave);
+            let found = null;
+            for (let c of containers){
+                // first, try detect directly in container
+                const d = detectInNode(c);
+                if (d){ found = d; break; }
+                // if not found, scan forward in doc order a few nodes
+                let cur = c;
+                for (let i=0;i<40 && cur;i++){
+                    cur = nextNode(cur);
+                    if (!cur) break;
+                    try {
+                        if (!elementVisible(cur)) continue;
+                        const d2 = detectInNode(cur);
+                        if (d2){ found = d2; break; }
+                    } catch(e){}
+                }
+                if (found) break;
+            }
+            if (found) {
+                // normalize small text to Portuguese Sim/Não
+                const txt = (found.text||'').toString().trim().toLowerCase();
+                let norm = found.text;
+                if (/^s($|im)/.test(txt)) norm = 'Sim';
+                else if (/^n($|ão|ao)/.test(txt)) norm = 'Não';
+                results[mapa[chave]] = {answer: norm, method: found.method, snippet: (found.html||'').slice(0,800)};
+            } else {
+                results[mapa[chave]] = {answer: null, method: 'not_found', snippet: '', debug: 'no containers matched or no markers'};
+            }
+        } catch(e){
+            results[mapa[chave]] = {answer: null, method: 'exception', snippet: '', debug: String(e)};
+        }
+    }
+    return results;
     """
 
-    def run_in_current_context():
+    def run_js_context():
         try:
             return self.driver.execute_script(script_js, mapa) or {}
-        except Exception:
+        except Exception as e:
+            print("JS exec error:", e)
             return {}
 
-    # 1) tenta no contexto atual (document principal)
-    dados = run_in_current_context()
+    # 1) tenta no contexto atual
+    raw = run_js_context()
 
-    # 2) se vazio, itera iframes tentando em cada um
-    if not dados:
+    # 2) se vazio / tudo null, tenta em iframes
+    any_found = any((v and v.get('answer')) for v in raw.values()) if isinstance(raw, dict) else False
+    if not any_found:
         try:
             iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
         except:
             iframes = []
-        for idx, frame in enumerate(iframes):
+        for f in iframes:
             try:
-                self.driver.switch_to.frame(frame)
-                time.sleep(0.2)
-                dados = run_in_current_context()
-                # volta para o default antes de decidir
+                self.driver.switch_to.frame(f)
+                time.sleep(0.15)
+                raw = run_js_context()
                 try:
                     self.driver.switch_to.default_content()
                 except:
                     pass
-                if dados:
+                any_found = any((v and v.get('answer')) for v in raw.values()) if isinstance(raw, dict) else False
+                if any_found:
                     break
             except Exception:
                 try:
@@ -221,38 +215,51 @@ def nova_logica_questionario(self) -> dict:
                     pass
                 continue
 
-    # Popula saida com normalização e chaves do schema
+    # Imprime o resultado cru (útil para depuração)
+    print("\n--- RAW JS Questionário Results ---")
+    try:
+        import json
+        print(json.dumps(raw, ensure_ascii=False, indent=2) if raw else raw)
+    except Exception:
+        print(raw)
+    print("--- END RAW ---\n")
+
+    # Normaliza e preenche saida compatível com COL_SPECS
+    saida = {}
     try:
         respostas_agregadas = []
-        for pergunta_full, resp in (dados or {}).items():
-            # normaliza resposta para "Sim"/"Não" quando detectado
-            r = (resp or '').strip()
-            rl = r.lower()
-            if rl in ('s', 'sim'):
-                rnorm = 'Sim'
-            elif rl in ('n', 'não', 'nao'):
-                rnorm = 'Não'
-            else:
-                # capitaliza primeira letra
-                rnorm = r.capitalize() if r else r
-
-            chave_norm = _norm_texto_chave(pergunta_full)
-            saida[chave_norm] = rnorm
-            respostas_agregadas.append(f"{pergunta_full} -> {rnorm}")
-
-            # tenta preencher a chave do schema correspondente
-            for p_schema in COL_SPECS:
-                try:
-                    if p_schema.aba == 'Questionário' and p_schema.campo == pergunta_full:
-                        saida[p_schema.key] = rnorm
-                        break
-                except:
+        for pergunta_full, info in (raw or {}).items():
+            try:
+                resp = None
+                if isinstance(info, dict):
+                    resp = info.get('answer')
+                else:
+                    resp = info
+                if resp is None:
                     continue
-
+                r = str(resp).strip()
+                if r.lower() in ('s', 'sim'):
+                    rnorm = 'Sim'
+                elif r.lower() in ('n', 'não', 'nao'):
+                    rnorm = 'Não'
+                else:
+                    rnorm = r.capitalize()
+                chave_norm = _norm_texto_chave(pergunta_full)
+                saida[chave_norm] = rnorm
+                respostas_agregadas.append(f"{pergunta_full} -> {rnorm}")
+                for p_schema in COL_SPECS:
+                    try:
+                        if p_schema.aba == 'Questionário' and p_schema.campo == pergunta_full:
+                            saida[p_schema.key] = rnorm
+                            break
+                    except:
+                        continue
+            except Exception as e:
+                print("Erro normalizando item:", pergunta_full, e)
         if respostas_agregadas:
             saida['Respostas do Questionário'] = "\n".join(respostas_agregadas)
     except Exception as e:
-        print(f"Erro ao normalizar dados JS: {e}")
+        print("Erro ao montar saida:", e)
 
     # garante voltar do iframe
     try:
@@ -262,9 +269,7 @@ def nova_logica_questionario(self) -> dict:
 
     return saida
 
-# ==============================================================================
 # BOT TESTE
-# ==============================================================================
 class BotTeste(HabibotBot):
     def extrair_um(self) -> dict:
         extrator = ExtratorHabibot(self.driver, self.wait, debug=self.debug, debug_visual=self.debug_visual)
@@ -275,18 +280,17 @@ class BotTeste(HabibotBot):
                 time.sleep(1)
                 row[_col_key('Titular', 'Dados Gerais', 'Nome')] = extrator._extrair_por_label_simples('Nome')
                 row[_col_key('Titular', 'Dados Gerais', 'CPF/CNPJ')] = extrator._extrair_por_label_simples('CPF/CNPJ')
-            except: pass
+            except:
+                pass
 
-        print("   -> LENDO QUESTIONÁRIO (MÉTODO MELHORADO)...")
-        # substitui a implementação para este teste somente
+        print("   -> LENDO QUESTIONÁRIO (MÉTODO AVANÇADO COM DEBUG)...")
         ExtratorHabibot.extrair_questionario_mapa = nova_logica_questionario
         extrator = ExtratorHabibot(self.driver, self.wait, debug=self.debug, debug_visual=self.debug_visual)
         qmap = extrator.extrair_questionario_mapa() or {}
-        # atualiza row com respostas (as chaves já vêm normalizadas / com chaves do schema)
         row.update(qmap)
         return row
 
 if __name__ == "__main__":
-    print("\n🚀 INICIANDO TESTE - LÓGICA MELHORADA")
+    print("\n🚀 INICIANDO TESTE - LÓGICA AVANÇADA")
     bot = BotTeste()
     bot.executar(debug=True, debug_visual=True)
