@@ -1817,111 +1817,129 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
-        # Espera fixa para garantir que os radios foram desenhados
-        time.sleep(2)
+        # Espera visual para garantir que os campos pintaram na tela
+        time.sleep(2.0)
         
         saida: dict[str, str] = {}
         
-        # Palavras-chave únicas para identificar cada pergunta
-        mapa_reverso = {
-            'responsável': '1. A mulher é a responsável pela unidade familiar?',
-            'negra': '2. Há pessoa negra na composição familiar?',
-            'deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
-            'idoso': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
-            'criança': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'câncer': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
-            'violência': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
-            'indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
-            'distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
-            'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
+        # Mapa de busca (Palavra-chave -> Nome da Coluna no Excel)
+        # Atenção: O JavaScript vai usar essas chaves para caçar os textos na tela
+        mapa_js = {
+            'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
+            'pessoa negra': '2. Há pessoa negra na composição familiar?',
+            'pessoa com deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
+            'idoso na composição': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
+            'criança ou adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            'câncer ou doença': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
+            'violência doméstica': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
+            'indígenas ou quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            'área de risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
+            'contrato distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
+            'Redes Socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
         }
 
         try:
-            # ESTRATÉGIA 1: Pega tudo que é INPUT MARCADO (O dado mais confiável)
-            marcados = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked, input[type='checkbox']:checked")
-            
-            for item in marcados:
-                resposta = ""
-                # 1. Tenta descobrir se é Sim ou Não
-                try:
-                    # Pega label vizinho
-                    lbl = item.find_element(By.XPATH, "./following-sibling::label")
-                    resposta = self._texto_limpo(lbl.text)
-                except: pass
-                
-                if not resposta:
-                    # Pega valor (v="1", v="true", v="Sim")
-                    val = item.get_attribute("value")
-                    if val:
-                        v_lower = val.lower()
-                        if v_lower in ['1', 's', 'sim', 'true', 'on']: resposta = "Sim"
-                        elif v_lower in ['0', 'n', 'nao', 'não', 'false', 'off']: resposta = "Não"
-                        else: resposta = val
-                
-                if not resposta: continue # Se achou marcado mas não sabe o que é, pula
-                
-                # 2. Descobre de qual pergunta é esse input (Sobe na árvore)
-                ancestral = item
-                pergunta_encontrada = None
-                
-                # Sobe até 6 níveis procurando o texto da pergunta
-                for _ in range(6):
-                    try:
-                        ancestral = ancestral.find_element(By.XPATH, "./..")
-                        texto_bloco = (ancestral.text or "").lower()
-                        
-                        # Verifica qual pergunta está neste bloco
-                        for chave, pergunta_full in mapa_reverso.items():
-                            if chave in texto_bloco:
-                                # Proteção: se o bloco for gigante (toda a página), ignora
-                                if len(texto_bloco) < 800:
-                                    pergunta_encontrada = pergunta_full
-                                    break
-                        if pergunta_encontrada: break
-                    except: break
-                
-                if pergunta_encontrada:
-                    # Salva no dicionário
-                    saida[_norm_texto_chave(pergunta_encontrada)] = resposta
+            # --- SCRIPT JS "ESPIÃO" ---
+            # Esse script roda dentro do Chrome e retorna o JSON com as respostas
+            script = """
+            var mapa = arguments[0];
+            var resultados = {};
+
+            function limpar(txt) {
+                return (txt || "").replace(/\\s+/g, " ").trim();
+            }
+
+            // Para cada pergunta do nosso mapa
+            for (var key in mapa) {
+                var textoPergunta = key.toLowerCase();
+                var nomeCompleto = mapa[key];
+                var respostaEncontrada = "";
+
+                // 1. Busca todos os elementos que contêm o texto da pergunta
+                var xpath = "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '" + textoPergunta + "')]";
+                var iterator = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+
+                // Tenta achar a resposta perto de cada ocorrência do texto
+                for (var i = 0; i < iterator.snapshotLength; i++) {
+                    var el = iterator.snapshotItem(i);
                     
-                    # Salva para o Excel
+                    // Ignora elementos invisíveis ou scripts
+                    if (el.offsetParent === null || el.tagName === 'SCRIPT') continue;
+                    
+                    // Sobe na hierarquia (Pai, Avô, Bisavô) procurando Inputs Marcados
+                    var container = el;
+                    for (var nivel = 0; nivel < 5; nivel++) { 
+                        if (!container) break;
+
+                        // A) Procura Radio/Checkbox CHECADO
+                        var input = container.querySelector("input:checked");
+                        if (input) {
+                            // Tenta achar o label do input
+                            var label = container.querySelector("label[for='" + input.id + "']");
+                            if (label) respostaEncontrada = label.innerText;
+                            else if (input.parentElement.tagName === 'LABEL') respostaEncontrada = input.parentElement.innerText;
+                            else respostaEncontrada = input.value; // Se não tem label, pega o value (ex: "Sim")
+                            
+                            if (respostaEncontrada) break;
+                        }
+
+                        // B) Procura Select (Lista Suspensa) com valor selecionado
+                        var sel = container.querySelector("select");
+                        if (sel && sel.selectedIndex >= 0) {
+                            var textoSel = sel.options[sel.selectedIndex].text;
+                            if (!textoSel.toLowerCase().includes("selecione")) {
+                                respostaEncontrada = textoSel;
+                                break;
+                            }
+                        }
+                        
+                        // C) Procura Texto "Sim" ou "Não" escrito solto na tela (gambiarra visual)
+                        var textoPuro = container.innerText.toLowerCase();
+                        // Remove o texto da própria pergunta para não confundir
+                        textoPuro = textoPuro.replace(textoPergunta, ""); 
+                        
+                        if (textoPuro.includes("sim") && !textoPuro.includes("não")) { respostaEncontrada = "Sim"; break; }
+                        if (textoPuro.includes("não") || textoPuro.includes("nao")) { respostaEncontrada = "Não"; break; }
+
+                        // Sobe para o pai
+                        container = container.parentElement;
+                    }
+                    if (respostaEncontrada) break;
+                }
+                
+                if (respostaEncontrada) {
+                    resultados[nomeCompleto] = limpar(respostaEncontrada);
+                }
+            }
+            return resultados;
+            """
+            
+            # Executa o script e recebe o dicionário pronto
+            dados_js = self.driver.execute_script(script, mapa_js)
+            
+            # Processa o retorno
+            if dados_js:
+                for pergunta_full, resp in dados_js.items():
+                    # Normaliza Sim/Não
+                    r_lower = resp.lower()
+                    if r_lower in ['1', 's', 'true', 'on']: resp = 'Sim'
+                    elif r_lower in ['0', 'n', 'false', 'off']: resp = 'Não'
+                    
+                    # Salva no dicionário de saída com as chaves corretas
+                    saida[_norm_texto_chave(pergunta_full)] = resp
+                    
+                    # Salva também com a chave do Schema (para o Excel gravar)
                     chave_schema = ""
                     for p_schema in COL_SPECS:
-                        if p_schema.aba == 'Questionário' and pergunta_encontrada == p_schema.campo:
+                        # Busca parcial para casar o nome completo
+                        if p_schema.aba == 'Questionário' and pergunta_full[:20] in p_schema.campo:
                             chave_schema = p_schema.campo
                             break
                     if chave_schema:
-                        saida[_col_key('Questionário', 'Perguntas', chave_schema)] = resposta
-
-            # ESTRATÉGIA 2: SELECTS (Listas Suspensas) - Caso não seja radio
-            selects = self.driver.find_elements(By.TAG_NAME, "select")
-            for sel in selects:
-                if not sel.is_displayed(): continue
-                try:
-                    valor = self.driver.execute_script("return arguments[0].options[arguments[0].selectedIndex].text;", sel)
-                    if not valor or "selecione" in valor.lower(): continue
-                    
-                    # Sobe procurando a pergunta
-                    ancestral = sel
-                    pergunta_encontrada = None
-                    for _ in range(4):
-                        ancestral = ancestral.find_element(By.XPATH, "./..")
-                        texto_bloco = (ancestral.text or "").lower()
-                        for chave, pergunta_full in mapa_reverso.items():
-                            if chave in texto_bloco and len(texto_bloco) < 800:
-                                pergunta_encontrada = pergunta_full
-                                break
-                        if pergunta_encontrada: break
-                    
-                    if pergunta_encontrada:
-                        saida[_col_key('Questionário', 'Perguntas', pergunta_encontrada)] = valor
-                except: pass
+                        saida[_col_key('Questionário', 'Perguntas', chave_schema)] = resp
 
         except Exception as e:
-            print(f"Erro questionário: {e}")
+            print(f"Erro na extração JS do questionário: {e}")
 
         return saida
 
