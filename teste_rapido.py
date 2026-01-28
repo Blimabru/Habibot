@@ -1,37 +1,28 @@
 import time
-import os
 import re
 from selenium.webdriver.common.by import By
-
-# Importa as classes do seu bot original
 from habibot import HabibotBot, ExtratorHabibot, COL_SPECS, _col_key, _norm_texto_chave
 
-print("🔧 PREPARANDO MODO DE TESTE (DOM INTELIGENTE)...")
+print("🔧 INICIANDO MODO DE TESTE (LÓGICA POSICIONAL)...")
 
 # ==============================================================================
-# 1. NOVA LÓGICA: RASTREAMENTO VISUAL E DE INPUTS
+# LÓGICA POSICIONAL (PRIMEIRO É SIM, SEGUNDO É NÃO)
 # ==============================================================================
 def nova_logica_questionario(self) -> dict:
     """
-    Lógica inteligente: Encontra a pergunta e vasculha a linha inteira
-    atrás de 'inputs marcados' ou 'botões acesos'.
+    Ignora valores e labels.
+    - Se o 1º Radio da linha está marcado -> SIM
+    - Se o 2º Radio da linha está marcado -> NÃO
     """
-    # Imports locais para evitar erros
     import time
-    import re
     from selenium.webdriver.common.by import By
-    
-    # 1. Clica na aba
+
     if not self.clicar_aba('Questionário'):
-        print("⚠️ Não foi possível clicar na aba Questionário.")
         return {}
     
-    # 2. Espera carregar
-    time.sleep(3.0)
+    time.sleep(3.0) 
     
     saida = {}
-    
-    # 3. Iframe (Segurança)
     usou_iframe = False
     try:
         iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
@@ -41,7 +32,6 @@ def nova_logica_questionario(self) -> dict:
     except: pass
 
     try:
-        # Mapa de Perguntas (Palavra-chave -> Nome Completo)
         mapa = {
             'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
             'pessoa negra': '2. Há pessoa negra na composição familiar?',
@@ -56,92 +46,87 @@ def nova_logica_questionario(self) -> dict:
             'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
         }
 
-        # Pega todos os elementos de texto visíveis que podem ser perguntas
-        # (Label, Span, TD, P, Div, Strong)
-        elementos_texto = self.driver.find_elements(By.CSS_SELECTOR, "label, span, td, p, div, strong, b")
+        # SCRIPT JAVASCRIPT: BUSCA POR POSIÇÃO (INDEX)
+        script_js = """
+        var mapa = arguments[0];
+        var resultados = {};
+        
+        function clean(txt) { return (txt || "").trim().toLowerCase(); }
 
-        for chave, pergunta_full in mapa.items():
-            resposta_encontrada = ""
-            elemento_pergunta = None
+        // Pega containers de perguntas
+        var linhas = document.querySelectorAll("tr, div.row, fieldset, .form-group, div");
 
-            # 1. Encontra onde está a pergunta na tela
-            for el in elementos_texto:
-                try:
-                    if not el.is_displayed(): continue
-                    # Verifica se o texto do elemento contém a palavra-chave
-                    if chave.lower() in (el.text or "").lower():
-                        elemento_pergunta = el
-                        break
-                except: continue
-            
-            if elemento_pergunta:
-                # 2. Varre os "ancestrais" (Pais) para achar o CONTAINER da pergunta (ex: a linha da tabela)
-                container = elemento_pergunta
-                for _ in range(5): # Sobe até 5 níveis
-                    try:
-                        container = container.find_element(By.XPATH, "./..")
-                        
-                        # --- ESTRATÉGIA A: INPUTS REAIS MARCADOS ---
-                        inputs_checked = container.find_elements(By.CSS_SELECTOR, "input:checked")
-                        if inputs_checked:
-                            val = inputs_checked[0].get_attribute("value")
-                            # Se o valor for explícito (Sim/Não)
-                            if val and val.lower() in ['sim', 'não', 'nao', 's', 'n']:
-                                resposta_encontrada = val
-                                break
-                            # Se for genérico (true/on/1), tenta achar o label vizinho
-                            labels = container.find_elements(By.TAG_NAME, "label")
-                            for lbl in labels:
-                                # Se o label aponta para esse input ou está perto dele
-                                if lbl.get_attribute("for") == inputs_checked[0].get_attribute("id"):
-                                    resposta_encontrada = lbl.text
-                                    break
-                            if resposta_encontrada: break
+        for (var chave in mapa) {
+            var perguntaFull = mapa[chave];
+            var respostaEncontrada = null;
 
-                        # --- ESTRATÉGIA B: CLASSES VISUAIS (Active, Checked, Selected) ---
-                        # Procura elementos com texto "Sim" ou "Não" dentro desse container
-                        opcoes = container.find_elements(By.XPATH, ".//*[contains(translate(text(), 'SIMNAO', 'simnao'), 'sim') or contains(translate(text(), 'SIMNAO', 'simnao'), 'não') or contains(translate(text(), 'SIMNAO', 'simnao'), 'nao')]")
+            for (var i = 0; i < linhas.length; i++) {
+                var el = linhas[i];
+                if (clean(el.innerText).includes(chave)) {
+                    
+                    // 1. Procura TODOS os inputs do tipo radio nessa linha
+                    var radios = el.querySelectorAll("input[type='radio'], input[type='checkbox']");
+                    
+                    if (radios.length >= 2) {
+                        // LÓGICA DE POSIÇÃO:
+                        // O primeiro radio costuma ser SIM (ou opção positiva/true)
+                        // O segundo radio costuma ser NÃO (ou opção negativa/false)
                         
-                        for opcao in opcoes:
-                            texto_opt = (opcao.text or "").strip().lower()
-                            if texto_opt not in ['sim', 'não', 'nao']: continue # Ignora frases longas
-                            
-                            # Verifica se esse elemento (ou o pai dele) tem classe de "ativado"
-                            # Classes comuns: active, checked, selected, btn-primary (vs btn-default), v-btn--active
-                            classes_el = (opcao.get_attribute("class") or "").lower()
-                            classes_pai = (opcao.find_element(By.XPATH, "./..").get_attribute("class") or "").lower()
-                            
-                            combo_classes = classes_el + " " + classes_pai
-                            
-                            # Palavras magicas que indicam seleção
-                            if "active" in combo_classes or "checked" in combo_classes or "selected" in combo_classes or "btn-primary" in combo_classes or "btn-success" in combo_classes:
-                                resposta_encontrada = texto_opt.capitalize().replace('nao', 'Não')
-                                break
+                        if (radios[0].checked) {
+                            respostaEncontrada = "Sim";
+                        } else if (radios[1].checked) {
+                            respostaEncontrada = "Não";
+                        }
+                    } 
+                    else if (radios.length === 1) {
+                        // Se só tem 1 (tipo checkbox único), se tiver marcado é Sim
+                        if (radios[0].checked) respostaEncontrada = "Sim";
+                        else respostaEncontrada = "Não";
+                    }
+
+                    // 2. Fallback: Botões Visuais (Active Class) por Ordem
+                    if (!respostaEncontrada) {
+                        var botoes = el.querySelectorAll(".btn, .v-btn, .option");
+                        // Filtra botões que parecem opções de sim/não
+                        var opcoes = [];
+                        for(var k=0; k<botoes.length; k++) {
+                            var t = clean(botoes[k].innerText);
+                            if(t==='sim' || t==='não' || t==='nao') opcoes.push(botoes[k]);
+                        }
                         
-                        if resposta_encontrada: break
-                        
-                    except: pass
-            
-            if resposta_encontrada:
-                # Normaliza
-                if resposta_encontrada.lower() in ['s', 'sim', '1', 'true']: resposta_encontrada = 'Sim'
-                elif resposta_encontrada.lower() in ['n', 'não', 'nao', '0', 'false']: resposta_encontrada = 'Não'
-                
-                print(f"✅ {chave[:15]}... -> {resposta_encontrada}")
-                
-                # Salva
-                saida[_norm_texto_chave(pergunta_full)] = resposta_encontrada
+                        if (opcoes.length >= 2) {
+                            // Verifica qual tem classe 'active'
+                            var c0 = (opcoes[0].className || "").toLowerCase();
+                            var c1 = (opcoes[1].className || "").toLowerCase();
+                            
+                            if (c0.includes("active") || c0.includes("checked") || c0.includes("primary")) respostaEncontrada = "Sim";
+                            else if (c1.includes("active") || c1.includes("checked") || c1.includes("primary")) respostaEncontrada = "Não";
+                        }
+                    }
+
+                    if (respostaEncontrada) {
+                        resultados[perguntaFull] = respostaEncontrada;
+                        break; 
+                    }
+                }
+            }
+        }
+        return resultados;
+        """
+        
+        dados = self.driver.execute_script(script_js, mapa)
+        
+        if dados:
+            for pergunta, resp in dados.items():
+                print(f"✅ Posição detectou: {resp}")
+                saida[_norm_texto_chave(pergunta)] = resp
                 for p_schema in COL_SPECS:
-                    if p_schema.aba == 'Questionário' and pergunta_full == p_schema.campo:
-                        saida[p_schema.key] = resposta_encontrada
-                        break
-            else:
-                print(f"⚠️ Não achei resposta marcada para: {chave}")
+                    if p_schema.aba == 'Questionário' and pergunta == p_schema.campo:
+                        saida[p_schema.key] = resp
 
     except Exception as e:
-        print(f"Erro na varredura inteligente: {e}")
+        print(f"Erro JS: {e}")
 
-    # Sai do iframe
     if usou_iframe:
         try: self.driver.switch_to.default_content()
         except: pass
@@ -149,21 +134,12 @@ def nova_logica_questionario(self) -> dict:
     return saida
 
 # ==============================================================================
-# 2. BOT TURBO (IGUAL AO ANTERIOR, SÓ MUDA A LÓGICA DO QUESTIONÁRIO)
+# BOT TESTE
 # ==============================================================================
 class BotTeste(HabibotBot):
     def extrair_um(self) -> dict:
-        extrator = ExtratorHabibot(
-            self.driver, 
-            self.wait, 
-            debug=self.debug, 
-            debug_visual=self.debug_visual,
-            ordem_logger=getattr(self, 'ordem_logger', None),
-            acoes_logger=getattr(self, 'acoes_logger', None)
-        )
+        extrator = ExtratorHabibot(self.driver, self.wait, debug=self.debug, debug_visual=self.debug_visual)
         row = {}
-
-        # 1. Identificação Rápida
         print("   -> Lendo Identificação...")
         if extrator.clicar_aba('Titular'):
             try:
@@ -172,21 +148,13 @@ class BotTeste(HabibotBot):
                 row[_col_key('Titular', 'Dados Gerais', 'CPF/CNPJ')] = extrator._extrair_por_label_simples('CPF/CNPJ')
             except: pass
 
-        # 2. Pula o resto...
-
-        # 3. Questionário com a NOVA lógica (Injetada)
-        print("   -> Lendo Questionário (Smart DOM)...")
-        # Injetamos a função diretamente aqui
+        print("   -> LENDO QUESTIONÁRIO (LÓGICA POSICIONAL 1º=Sim, 2º=Não)...")
         ExtratorHabibot.extrair_questionario_mapa = nova_logica_questionario
         qmap = extrator.extrair_questionario_mapa() or {}
         row.update(qmap)
-
         return row
 
-# ==============================================================================
-# 3. EXECUÇÃO
-# ==============================================================================
 if __name__ == "__main__":
-    print("\n🚀 INICIANDO TESTE (MODO DOM INTELIGENTE)")
+    print("\n🚀 INICIANDO TESTE - POSIÇÃO DOS BOTÕES")
     bot = BotTeste()
     bot.executar(debug=True, debug_visual=True)
