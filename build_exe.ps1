@@ -80,10 +80,18 @@ if (Test-Path .\*.spec){ Remove-Item -Force .\*.spec }
 # --add-binary embute o chromedriver.exe para execução offline
 # --icon define o ícone do executável (ICO multi-tamanho)
 # --version-file define metadados do arquivo no Windows
+# --hidden-import garante que os módulos do pacote src sejam incluídos
 python -m PyInstaller --clean --onefile --name $ExeName --distpath $DistDir `
   --icon "assets\images\icons\Habibot.ico" `
   --version-file "assets\build\version_info.txt" `
   --add-binary "assets\drivers\chromedriver.exe;assets\drivers" `
+  --hidden-import src.bot `
+  --hidden-import src.config `
+  --hidden-import src.dependencies `
+  --hidden-import src.excel_handler `
+  --hidden-import src.extractor `
+  --hidden-import src.loggers `
+  --hidden-import src.schema `
   $Entry
 
 Write-Host "\nEXE gerado em: $DistDir\\$ExeName.exe" -ForegroundColor Green

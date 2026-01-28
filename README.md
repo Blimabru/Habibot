@@ -121,10 +121,20 @@ Extrair por lista de CPFs:
 ## 📁 Estrutura do Projeto
 ```
 Habibot/
-├── habibot.py                # Script principal do bot
+├── habibot.py                # Script principal do bot (ponto de entrada)
 ├── build_exe.ps1             # Script de build do executável (Windows)
 ├── requirements.txt          # Dependências Python
 ├── README.md                 # Documentação
+│
+├───src/                      # Código fonte modularizado
+│   ├── __init__.py           # Inicialização do pacote
+│   ├── bot.py                # Classe HabibotBot (automação principal)
+│   ├── config.py             # Configurações e utilitários
+│   ├── dependencies.py       # Gerenciamento de dependências
+│   ├── excel_handler.py      # Manipulação de arquivos Excel
+│   ├── extractor.py          # Classe ExtratorHabibot (extração de dados)
+│   ├── loggers.py            # Classes de logging (OrdemLeituraLogger, AcoesLogger)
+│   └── schema.py             # Schema e estrutura dos dados
 │
 ├───assets/
 │   ├───build/
