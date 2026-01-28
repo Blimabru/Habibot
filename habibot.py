@@ -1814,81 +1814,149 @@ class ExtratorHabibot:
         return dados
 
     def extrair_questionario_mapa(self) -> dict[str, str]:
+    """Extrai o questionário procurando, por cada div.question, o input marcado e seu label local.
+
+    Estratégia determinística:
+      - clica na aba Questionário
+      - espera curto (render)
+      - executa um script no browser que itera cada div.question e:
+          * pega heading (h6/h5/h4/label/text)
+          * procura input[type=radio|checkbox]:checked DENTRO do mesmo container
+          * se encontrado, tenta achar label[for=id] DENTRO do container (fallback: closest label, sibling, global)
+          * retorna lista de {heading, chosen: {id, value, label, method}, rawLabels}
+      - normaliza para 'Sim'/'Não' e preenche também as chaves do schema COL_SPECS
+    """
+    try:
         if not self.clicar_aba('Questionário'):
             return {}
-        
-        # Tempo para o texto aparecer
-        time.sleep(3.0)
-        
-        saida: dict[str, str] = {}
-        
-        # 1. Tenta focar no Iframe se existir (segurança)
-        try:
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-            if iframes:
-                self.driver.switch_to.frame(iframes[0])
-        except: pass
+        # pequena espera para a aba renderizar
+        time.sleep(0.6)
 
-        # 2. Pega O TEXTO PURO da página (Ignora HTML, pega o que está visível)
-        try:
-            texto_completo = self.driver.find_element(By.TAG_NAME, "body").text
-            # Remove quebras de linha extras para facilitar a busca
-            texto_limpo = " ".join(texto_completo.split()).lower()
-            
-            # Debug: Se quiser ver o que o robô está lendo, descomente a linha abaixo
-            # print(f"--- TEXTO DA PÁGINA ---\n{texto_limpo[:300]}...") 
-        except Exception as e:
-            print(f"Erro ao ler texto da página: {e}")
-            try: self.driver.switch_to.default_content()
-            except: pass
-            return {}
+        js = r"""
+        const out = [];
+        const questions = Array.from(document.querySelectorAll('div.question, .question'));
+        function textOf(el){ try { return (el && (el.innerText||el.textContent||'')).toString().trim(); } catch(e){ return ''; } }
+        for (const q of questions){
+            try {
+                const h = q.querySelector('h6,h5,h4,label');
+                const heading = textOf(h) || textOf(q).split('\n')[0] || '';
+                let chosen = null;
+                // primeiro: input marcado dentro do container
+                let checked = q.querySelector("input[type='radio']:checked, input[type='checkbox']:checked");
+                if (checked) {
+                    const id = checked.id || '';
+                    let label = null;
+                    if (id) label = q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']");
+                    if (!label) label = checked.closest('label');
+                    if (!label) {
+                        let sib = checked.nextElementSibling;
+                        if (sib && (sib.tagName||'').toLowerCase()==='label') label = sib;
+                    }
+                    chosen = { id: id, value: checked.value||'', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_checked' };
+                } else {
+                    // fallback: procura inputs dentro do container cuja propriedade .checked seja true
+                    const inputs = Array.from(q.querySelectorAll("input[type='radio'], input[type='checkbox']"));
+                    for (const inp of inputs){
+                        try {
+                            if (inp.checked) {
+                                const id = inp.id || '';
+                                let label = id ? (q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']")) : null;
+                                if (!label) label = inp.closest('label');
+                                if (!label) { let s = inp.nextElementSibling; if (s && (s.tagName||'').toLowerCase()==='label') label = s; }
+                                chosen = { id: id, value: inp.value||'', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_property_checked' };
+                                break;
+                            }
+                        } catch(e){}
+                    }
+                    // se ainda nada, tentar input[name]:checked global com label pertencente ao mesmo question
+                    if (!chosen) {
+                        const names = [...new Set(Array.from(q.querySelectorAll("input")).map(i => i.name).filter(n=>n))];
+                        for (const nm of names){
+                            try {
+                                const g = document.querySelector("input[name='"+nm+"']:checked");
+                                if (g) {
+                                    const id = g.id || '';
+                                    let label = id ? (q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']")) : null;
+                                    const ok = label && (q.contains(label) || (label.closest('.question') && label.closest('.question') === q));
+                                    if (ok) {
+                                        chosen = { id:id, value:g.value||'', label: textOf(label), labelHTML: label.outerHTML, method: 'global_checked_but_local_label' };
+                                        break;
+                                    } else if (id) {
+                                        // fallback: attach global label if exists
+                                        const labg = document.querySelector("label[for='"+id+"']");
+                                        if (labg) {
+                                            chosen = { id:id, value:g.value||'', label: textOf(labg), labelHTML: labg.outerHTML, method: 'global_checked_fallback' };
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch(e){}
+                        }
+                    }
+                }
 
-        # Mapeamento (Trecho Único da Pergunta -> Nome Completo)
-        mapa_reverso = {
-            'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
-            'pessoa negra': '2. Há pessoa negra na composição familiar?',
-            'pessoa com deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
-            'idoso na composição': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
-            'criança ou adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'câncer ou doença': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
-            'violência doméstica': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
-            'povos indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'área de risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
-            'contrato distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
-            'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
+                // coletar labels brutos (útil para debug/compat)
+                const rawLabels = Array.from(q.querySelectorAll('label')).map(l => ({ text: textOf(l), html: (l.outerHTML||'').slice(0,400) }));
+                out.push({ heading: heading, chosen: chosen, rawLabels: rawLabels });
+            } catch(e){}
         }
+        return out;
+        """
 
-        import re
+        collected = []
+        try:
+            collected = self.driver.execute_script(js) or []
+        except Exception:
+            collected = []
 
-        for chave, pergunta_full in mapa_reverso.items():
-            chave_lower = chave.lower()
-            
-            # Se a pergunta está no texto da página
-            if chave_lower in texto_limpo:
-                # ESTRATÉGIA: Procura "Sim" ou "Não" logo APÓS o texto da pergunta.
-                # O regex busca: (Texto da Pergunta) + (até 200 caracteres de lixo) + (Palavra Sim ou Não isolada)
-                padrao = re.escape(chave_lower) + r".{0,200}?\b(sim|não|nao)\b"
-                
-                match = re.search(padrao, texto_limpo)
-                
-                if match:
-                    # O grupo(1) é o Sim ou Não encontrado
-                    resposta = match.group(1).capitalize()
-                    if resposta == "Nao": resposta = "Não"
-                    
-                    # Salva nas chaves (Normalizada e Schema)
-                    saida[_norm_texto_chave(pergunta_full)] = resposta
-                    
+        saida: dict[str, str] = {}
+        respostas_agregadas = []
+        for item in (collected or []):
+            try:
+                heading = (item.get('heading') or '')[:1000]
+                chosen = item.get('chosen') or {}
+                resp_text = ''
+                metodo = ''
+                if chosen and chosen.get('label'):
+                    resp_text = chosen.get('label')
+                    metodo = chosen.get('method') or 'chosen_label'
+                elif chosen and chosen.get('value'):
+                    resp_text = chosen.get('value')
+                    metodo = chosen.get('method') or 'chosen_value'
+                else:
+                    resp_text = ''
+                    metodo = 'not_detected'
+
+                rnorm = ''
+                if resp_text:
+                    rl = resp_text.strip().lower()
+                    if rl in ('s', 'sim'):
+                        rnorm = 'Sim'
+                    elif rl in ('n', 'não', 'nao'):
+                        rnorm = 'Não'
+                    else:
+                        rnorm = resp_text.strip().capitalize()
+
+                key_norm = _norm_texto_chave(heading)
+                if key_norm:
+                    saida[key_norm] = rnorm
+                    respostas_agregadas.append(f"{heading} -> {rnorm} ({metodo})")
+                    # preenche também a chave do schema correspondente
                     for p_schema in COL_SPECS:
-                        if p_schema.aba == 'Questionário' and pergunta_full == p_schema.campo:
-                            saida[p_schema.key] = resposta
-                            break
-        
-        # Volta do iframe
-        try: self.driver.switch_to.default_content()
-        except: pass
+                        try:
+                            if p_schema.aba == 'Questionário' and p_schema.campo == heading:
+                                saida[p_schema.key] = rnorm
+                                break
+                        except:
+                            continue
+
+        if respostas_agregadas:
+            saida['Respostas do Questionário'] = "\n".join(respostas_agregadas)
 
         return saida
+
+    except Exception:
+        return {}
 
     def extrair_questionario(self) -> str:
         mp = self.extrair_questionario_mapa() or {}
