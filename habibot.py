@@ -1817,111 +1817,111 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
-        # --- MUDANÇA 1: ESPERA INTELIGENTE ---
-        # Em vez de dormir, espera até o texto da primeira pergunta aparecer
-        print("⏳ Aguardando carregamento das perguntas...")
-        try:
-            WebDriverWait(self.driver, 8).until(
-                lambda d: "responsável pela unidade" in d.page_source.lower() or 
-                          "pessoa negra" in d.page_source.lower()
-            )
-        except:
-            print("⚠️ ALERTA: O questionário demorou demais ou está vazio.")
+        # Espera fixa para garantir que os radios foram desenhados
+        time.sleep(2)
         
         saida: dict[str, str] = {}
         
-        mapa_perguntas = {
-            'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
-            'pessoa negra': '2. Há pessoa negra na composição familiar?',
-            'pessoa com deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
-            'idoso na composição': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
-            'criança ou adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'câncer ou doença': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
-            'violência doméstica': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
-            'indígenas ou quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'área de risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
-            'contrato distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
-            'Socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
+        # Palavras-chave únicas para identificar cada pergunta
+        mapa_reverso = {
+            'responsável': '1. A mulher é a responsável pela unidade familiar?',
+            'negra': '2. Há pessoa negra na composição familiar?',
+            'deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
+            'idoso': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
+            'criança': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            'adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            'câncer': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
+            'violência': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
+            'indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            'quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            'risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
+            'distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
+            'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
         }
 
         try:
-            for palavra_chave, pergunta_completa in mapa_perguntas.items():
+            # ESTRATÉGIA 1: Pega tudo que é INPUT MARCADO (O dado mais confiável)
+            marcados = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio']:checked, input[type='checkbox']:checked")
+            
+            for item in marcados:
                 resposta = ""
+                # 1. Tenta descobrir se é Sim ou Não
+                try:
+                    # Pega label vizinho
+                    lbl = item.find_element(By.XPATH, "./following-sibling::label")
+                    resposta = self._texto_limpo(lbl.text)
+                except: pass
                 
-                # --- MUDANÇA 2: BUSCA POR XPATH DIRETO ---
-                # Procura qualquer elemento que tenha o texto da pergunta
-                xpath = f"//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{palavra_chave.lower()}')]"
-                elementos = self.driver.find_elements(By.XPATH, xpath)
+                if not resposta:
+                    # Pega valor (v="1", v="true", v="Sim")
+                    val = item.get_attribute("value")
+                    if val:
+                        v_lower = val.lower()
+                        if v_lower in ['1', 's', 'sim', 'true', 'on']: resposta = "Sim"
+                        elif v_lower in ['0', 'n', 'nao', 'não', 'false', 'off']: resposta = "Não"
+                        else: resposta = val
                 
-                # Filtra apenas elementos visíveis
-                elementos = [el for el in elementos if el.is_displayed()]
-
-                for el in elementos:
-                    # Varre os ancestrais (Pai, Avô...) procurando a resposta perto da pergunta
-                    ancestral = el
-                    for _ in range(4): # Sobe até 4 níveis na hierarquia
-                        try:
-                            ancestral = ancestral.find_element(By.XPATH, "./..")
-                            
-                            # A) Tenta Radio Button ou Checkbox Marcado
-                            inputs = ancestral.find_elements(By.CSS_SELECTOR, "input:checked")
-                            for inp in inputs:
-                                # Tenta pegar o label DEPOIS do input
-                                try:
-                                    lbl = inp.find_element(By.XPATH, "./following-sibling::label")
-                                    txt = self._texto_limpo(lbl.text)
-                                    if txt: resposta = txt; break
-                                except: pass
-                                
-                                # Tenta pegar o valor (value="Sim")
-                                if not resposta:
-                                    val = inp.get_attribute("value")
-                                    if val and val.lower() in ['sim', 'nao', 'não']:
-                                        resposta = val
-                                        break
-                            if resposta: break
-
-                            # B) Tenta Campo Select (Lista Suspensa)
-                            selects = ancestral.find_elements(By.TAG_NAME, "select")
-                            for s in selects:
-                                txt = self.driver.execute_script("return arguments[0].options[arguments[0].selectedIndex].text;", s)
-                                if txt and "selecione" not in txt.lower():
-                                    resposta = txt
+                if not resposta: continue # Se achou marcado mas não sabe o que é, pula
+                
+                # 2. Descobre de qual pergunta é esse input (Sobe na árvore)
+                ancestral = item
+                pergunta_encontrada = None
+                
+                # Sobe até 6 níveis procurando o texto da pergunta
+                for _ in range(6):
+                    try:
+                        ancestral = ancestral.find_element(By.XPATH, "./..")
+                        texto_bloco = (ancestral.text or "").lower()
+                        
+                        # Verifica qual pergunta está neste bloco
+                        for chave, pergunta_full in mapa_reverso.items():
+                            if chave in texto_bloco:
+                                # Proteção: se o bloco for gigante (toda a página), ignora
+                                if len(texto_bloco) < 800:
+                                    pergunta_encontrada = pergunta_full
                                     break
-                            if resposta: break
-                            
-                            # C) Tenta Texto "Sim/Não" solto no HTML (Span, Div, Strong)
-                            if "sim" in ancestral.text.lower() or "não" in ancestral.text.lower():
-                                linhas = ancestral.text.split('\n')
-                                for l in linhas:
-                                    l = l.strip().lower()
-                                    if l in ['sim', 'não', 'nao']:
-                                        resposta = l.capitalize().replace('nao', 'Não')
-                                        break
-                            if resposta: break
-
-                        except: pass
+                        if pergunta_encontrada: break
+                    except: break
+                
+                if pergunta_encontrada:
+                    # Salva no dicionário
+                    saida[_norm_texto_chave(pergunta_encontrada)] = resposta
                     
-                    if resposta: break
-
-                if resposta:
-                    # Normaliza e Salva
-                    if resposta.lower() == 'nao': resposta = 'Não'
-                    
-                    # Salva usando a chave normalizada
-                    saida[_norm_texto_chave(pergunta_completa)] = resposta
-                    
-                    # Salva também com a chave exata do Schema para o Excel
+                    # Salva para o Excel
                     chave_schema = ""
                     for p_schema in COL_SPECS:
-                        if p_schema.aba == 'Questionário' and palavra_chave in p_schema.campo.lower():
+                        if p_schema.aba == 'Questionário' and pergunta_encontrada == p_schema.campo:
                             chave_schema = p_schema.campo
                             break
                     if chave_schema:
                         saida[_col_key('Questionário', 'Perguntas', chave_schema)] = resposta
 
+            # ESTRATÉGIA 2: SELECTS (Listas Suspensas) - Caso não seja radio
+            selects = self.driver.find_elements(By.TAG_NAME, "select")
+            for sel in selects:
+                if not sel.is_displayed(): continue
+                try:
+                    valor = self.driver.execute_script("return arguments[0].options[arguments[0].selectedIndex].text;", sel)
+                    if not valor or "selecione" in valor.lower(): continue
+                    
+                    # Sobe procurando a pergunta
+                    ancestral = sel
+                    pergunta_encontrada = None
+                    for _ in range(4):
+                        ancestral = ancestral.find_element(By.XPATH, "./..")
+                        texto_bloco = (ancestral.text or "").lower()
+                        for chave, pergunta_full in mapa_reverso.items():
+                            if chave in texto_bloco and len(texto_bloco) < 800:
+                                pergunta_encontrada = pergunta_full
+                                break
+                        if pergunta_encontrada: break
+                    
+                    if pergunta_encontrada:
+                        saida[_col_key('Questionário', 'Perguntas', pergunta_encontrada)] = valor
+                except: pass
+
         except Exception as e:
-            print(f"Erro ao ler questionário: {e}")
+            print(f"Erro questionário: {e}")
 
         return saida
 
