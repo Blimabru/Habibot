@@ -1817,136 +1817,76 @@ class ExtratorHabibot:
         if not self.clicar_aba('Questionário'):
             return {}
         
-        # Pausa para garantir que carregou
-        time.sleep(2.0)
+        # Tempo para o texto aparecer
+        time.sleep(3.0)
         
         saida: dict[str, str] = {}
         
-        # Palavras-chave para identificar a pergunta quando acharmos uma resposta marcada
+        # 1. Tenta focar no Iframe se existir (segurança)
+        try:
+            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+            if iframes:
+                self.driver.switch_to.frame(iframes[0])
+        except: pass
+
+        # 2. Pega O TEXTO PURO da página (Ignora HTML, pega o que está visível)
+        try:
+            texto_completo = self.driver.find_element(By.TAG_NAME, "body").text
+            # Remove quebras de linha extras para facilitar a busca
+            texto_limpo = " ".join(texto_completo.split()).lower()
+            
+            # Debug: Se quiser ver o que o robô está lendo, descomente a linha abaixo
+            # print(f"--- TEXTO DA PÁGINA ---\n{texto_limpo[:300]}...") 
+        except Exception as e:
+            print(f"Erro ao ler texto da página: {e}")
+            try: self.driver.switch_to.default_content()
+            except: pass
+            return {}
+
+        # Mapeamento (Trecho Único da Pergunta -> Nome Completo)
         mapa_reverso = {
-            'responsável': '1. A mulher é a responsável pela unidade familiar?',
-            'negra': '2. Há pessoa negra na composição familiar?',
-            'deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
-            'idoso': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
-            'criança': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-            'câncer': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
-            'violência': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
-            'indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'quilombolas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-            'risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
-            'distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
+            'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
+            'pessoa negra': '2. Há pessoa negra na composição familiar?',
+            'pessoa com deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
+            'idoso na composição': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
+            'criança ou adolescente': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
+            'câncer ou doença': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
+            'violência doméstica': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
+            'povos indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
+            'área de risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
+            'contrato distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
             'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
         }
 
-        try:
-            # 1. VERIFICAÇÃO DE IFRAME (MUITO IMPORTANTE)
-            # Se o questionário estiver numa "janela dentro da janela", o robô normal não vê.
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-            usou_iframe = False
-            if iframes:
-                # Tenta entrar no primeiro iframe que achar
-                try:
-                    self.driver.switch_to.frame(iframes[0])
-                    usou_iframe = True
-                except: pass
+        import re
 
-            # 2. SCRIPT DE BUSCA REVERSA (JS)
-            # Encontra tudo que está MARCADO e descobre o texto perto
-            script = """
-            var resultados = {};
+        for chave, pergunta_full in mapa_reverso.items():
+            chave_lower = chave.lower()
             
-            function limpar(txt) {
-                return (txt || "").replace(/\\s+/g, " ").trim().toLowerCase();
-            }
-
-            // A) Pega todos os Inputs MARCADOS (Radio/Checkbox)
-            var inputs = document.querySelectorAll("input:checked");
-            for (var i = 0; i < inputs.length; i++) {
-                var input = inputs[i];
-                var val = input.value;
+            # Se a pergunta está no texto da página
+            if chave_lower in texto_limpo:
+                # ESTRATÉGIA: Procura "Sim" ou "Não" logo APÓS o texto da pergunta.
+                # O regex busca: (Texto da Pergunta) + (até 200 caracteres de lixo) + (Palavra Sim ou Não isolada)
+                padrao = re.escape(chave_lower) + r".{0,200}?\b(sim|não|nao)\b"
                 
-                // Tenta achar o texto da pergunta subindo na hierarquia
-                var ancestral = input.parentElement;
-                var textoEncontrado = "";
+                match = re.search(padrao, texto_limpo)
                 
-                // Sobe até 5 níveis procurando texto relevante
-                for (var j=0; j<5; j++) {
-                    if (!ancestral) break;
-                    var txt = limpar(ancestral.innerText);
-                    // Se o texto for longo o suficiente para ser uma pergunta (> 15 chars)
-                    if (txt.length > 15) {
-                        textoEncontrado = txt;
-                        break;
-                    }
-                    ancestral = ancestral.parentElement;
-                }
-                
-                if (textoEncontrado) {
-                    resultados[textoEncontrado] = val;
-                }
-            }
-            
-            // B) Pega todos os Selects (Listas) com valor
-            var selects = document.querySelectorAll("select");
-            for (var i = 0; i < selects.length; i++) {
-                var sel = selects[i];
-                if (sel.selectedIndex >= 0) {
-                    var opt = sel.options[sel.selectedIndex];
-                    var val = opt.text;
-                    if (!val.toLowerCase().includes("selecione")) {
-                        var ancestral = sel.parentElement;
-                        var textoEncontrado = "";
-                        for (var j=0; j<5; j++) {
-                            if (!ancestral) break;
-                            var txt = limpar(ancestral.innerText);
-                            if (txt.length > 15) {
-                                textoEncontrado = txt;
-                                break;
-                            }
-                            ancestral = ancestral.parentElement;
-                        }
-                        if (textoEncontrado) resultados[textoEncontrado] = val;
-                    }
-                }
-            }
-            
-            return resultados;
-            """
-            
-            # Roda o script e pega o dicionário { "Texto da Pergunta": "Sim/Não" }
-            dados_brutos = self.driver.execute_script(script)
-            
-            # Volta do Iframe se tiver entrado
-            if usou_iframe:
-                self.driver.switch_to.default_content()
-
-            # 3. CRUZA OS DADOS COM O SEU EXCEL
-            if dados_brutos:
-                for texto_site, resposta_site in dados_brutos.items():
-                    # Normaliza a resposta (s/n -> Sim/Não)
-                    resp_lower = str(resposta_site).lower()
-                    resp_final = resposta_site
-                    if resp_lower in ['on', 'true', '1', 's', 'sim']: resp_final = 'Sim'
-                    elif resp_lower in ['off', 'false', '0', 'n', 'nao', 'não']: resp_final = 'Não'
+                if match:
+                    # O grupo(1) é o Sim ou Não encontrado
+                    resposta = match.group(1).capitalize()
+                    if resposta == "Nao": resposta = "Não"
                     
-                    # Tenta descobrir qual é a pergunta do Excel baseada na palavra-chave
-                    for palavra_chave, nome_coluna_excel in mapa_reverso.items():
-                        if palavra_chave in texto_site:
-                            # ACHOU! Salva nas chaves corretas
-                            saida[_norm_texto_chave(nome_coluna_excel)] = resp_final
-                            
-                            # Salva também com a chave interna do Schema (para garantir que grave no Excel)
-                            for p_schema in COL_SPECS:
-                                if p_schema.aba == 'Questionário' and nome_coluna_excel == p_schema.campo:
-                                    saida[p_schema.key] = resp_final
+                    # Salva nas chaves (Normalizada e Schema)
+                    saida[_norm_texto_chave(pergunta_full)] = resposta
+                    
+                    for p_schema in COL_SPECS:
+                        if p_schema.aba == 'Questionário' and pergunta_full == p_schema.campo:
+                            saida[p_schema.key] = resposta
                             break
-
-        except Exception as e:
-            print(f"Erro critico questionario: {e}")
-            if usou_iframe:
-                try: self.driver.switch_to.default_content()
-                except: pass
+        
+        # Volta do iframe
+        try: self.driver.switch_to.default_content()
+        except: pass
 
         return saida
 
