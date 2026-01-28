@@ -1,320 +1,223 @@
 import time
-import re
+import json
 from selenium.webdriver.common.by import By
 from habibot import HabibotBot, ExtratorHabibot, COL_SPECS, _col_key, _norm_texto_chave
 
-print("🔧 INICIANDO MODO DE TESTE (LÓGICA AVANÇADA + DEBUG)...")
+print("🔧 INICIANDO MODO DE TESTE (INSPEÇÃO DETALHADA DO QUESTIONÁRIO)...")
 
 def nova_logica_questionario(self) -> dict:
     """
-    Extração do Questionário com varredura DOM em ordem document (proximidade) e debug.
-    Melhorias:
-      - procura label associado preferencialmente DENTRO do container da pergunta (não global)
-      - fallback ordenado: container.querySelector -> input.closest('label') -> sibling -> document.querySelector
-      - imprime RAW JS para depuração
+    Varre cada div.question e coleta dados brutos sobre inputs/labels para diagnóstico.
+    Retorna mapa normalizado pergunta -> resposta (com heurística) e imprime o RAW detalhado.
     """
     if not self.clicar_aba('Questionário'):
         return {}
 
-    time.sleep(0.6)  # espera rápida para render
+    time.sleep(0.6)
 
-    mapa = {
-        'responsável pela unidade': '1. A mulher é a responsável pela unidade familiar?',
-        'pessoa negra': '2. Há pessoa negra na composição familiar?',
-        'deficiência': '3. Há pessoa com deficiência na composição familiar, comprovada por avaliação biopsicossocial (Lei nº 13.146/2015 e Decreto nº 11.063/2022)?',
-        'idoso': '4. Há idoso na composição familiar, comprovado por documento civil com data de nascimento?',
-        'criança': '5. Há criança ou adolescente na composição familiar, comprovado por certidão de nascimento, guarda ou tutela?',
-        'câncer': '6. Há pessoa com câncer ou doença rara crônica e degenerativa na família, comprovado por laudo médico?',
-        'violência': '7. Há mulheres vítimas de violência doméstica/familiar na família, comprovado por registro no Cadastro Nacional de Violência Doméstica (Lei Maria da Penha)?',
-        'indígenas': '8. Há integrantes de povos indígenas ou quilombolas na família, declarados no CadÚnico?',
-        'área de risco': '9. A família reside em área de risco (deslizamentos, inundações etc.), conforme mapeamento do PMRR, CPRM ou Defesa Civil?',
-        'distratado': '10. O beneficiário teve contrato distratado ou rescindido involuntariamente, conforme normativo do Ente Público?',
-        'socioassistenciais': '11. Atualmente é atendido pelas redes Socioassistenciais do Município?'
-    }
-
-    # JS que faz a varredura DOM a partir do nó da pergunta (document order traversal)
-    script_js = r"""
-    const mapa = arguments[0];
-
-    function clean(s){ return (s||'').trim().toLowerCase(); }
-
-    function nextNode(node) {
-        if (!node) return null;
-        if (node.firstElementChild) return node.firstElementChild;
-        let n = node;
-        while (n) {
-            if (n.nextElementSibling) return n.nextElementSibling;
-            n = n.parentElement;
-        }
-        return null;
-    }
-
-    function elementVisible(el){
+    # JS que coleta evidências por pergunta (executado no browser)
+    script_collect = r"""
+    const out = [];
+    // seleciona containers de pergunta (afine se necessário)
+    const questions = Array.from(document.querySelectorAll('div.question, .question'));
+    function clean(s){ return (s||'').toString().trim(); }
+    for (let q of questions){
         try {
-            const rect = el.getBoundingClientRect();
-            return !(rect.width === 0 && rect.height === 0);
-        } catch(e){ return true; }
-    }
-
-    function findLocalLabelForInput(container, inp) {
-        // Tentativas ordenadas de achar label relacionalmente dentro do container/ancestors
-        try {
-            const id = inp.id || '';
-            if (id) {
-                // 1) label within container
-                try {
-                    const lab = container.querySelector("label[for='"+id+"']");
-                    if (lab) return lab;
-                } catch(e){}
-                // 2) input.closest('label')
-                try {
-                    const lab2 = inp.closest('label');
-                    if (lab2) return lab2;
-                } catch(e){}
-                // 3) sibling label (next/previous)
-                try {
-                    let s = inp.nextElementSibling;
-                    if (s && s.tagName.toLowerCase()==='label') return s;
-                    s = inp.previousElementSibling;
-                    if (s && s.tagName.toLowerCase()==='label') return s;
-                } catch(e){}
-                // 4) label inside the closest form or question ancestor
-                try {
-                    const ancestor = container.closest('form') || container.closest('.question') || container;
-                    if (ancestor) {
-                        const lab3 = ancestor.querySelector("label[for='"+id+"']");
-                        if (lab3) return lab3;
-                    }
-                } catch(e){}
-                // 5) global fallback (last resort)
-                try {
-                    return document.querySelector("label[for='"+id+"']");
-                } catch(e){}
-            }
-        } catch(e){}
-        return null;
-    }
-
-    function detectInNode(n) {
-        try {
-            // 1) inputs (radio/checkbox) near the node
-            const inputs = Array.from(n.querySelectorAll("input[type='radio'], input[type='checkbox']"));
+            // pergunta (tenta h6/h5/label/text)
+            let title = '';
+            try { title = clean((q.querySelector('h6')||q.querySelector('h5')||q.querySelector('h4')||q.querySelector('label')||q).innerText); } catch(e){}
+            // inputs radios/checkboxes dentro do container
+            const inputs = Array.from(q.querySelectorAll("input[type='radio'], input[type='checkbox']"));
+            const options = [];
             for (let inp of inputs){
                 try {
-                    if (inp.checked){
-                        // try find label text LOCAL to the container
-                        const lab = findLocalLabelForInput(n, inp);
-                        if (lab) {
-                            // ensure label is within same question/container (or at least visible near)
-                            if (n.contains(lab) || (lab.closest('.question') && lab.closest('.question') === n.closest('.question'))) {
-                                return {method:'input_checked_label', text:clean(lab.innerText || lab.textContent), html:lab.outerHTML};
-                            }
-                        }
-                        // sibling next label
-                        try {
-                            const sib = inp.nextElementSibling;
-                            if (sib && clean(sib.innerText)) return {method:'input_checked_sibling', text:clean(sib.innerText), html:sib.outerHTML};
-                        } catch(e){}
-                        return {method:'input_checked', text:'sim', html:inp.outerHTML};
-                    }
-                    const ar = (inp.getAttribute('aria-checked')||'').toString().toLowerCase();
-                    const ch = (inp.getAttribute('checked')||'').toString().toLowerCase();
-                    if (ar==='true' || ch==='checked' || ch==='true') {
-                        const lab = findLocalLabelForInput(n, inp);
-                        if (lab && (n.contains(lab) || (lab.closest('.question') && lab.closest('.question') === n.closest('.question')))) {
-                            return {method:'input_attr_checked', text:clean(lab.innerText || lab.textContent), html:lab.outerHTML};
-                        }
-                        try {
-                            const sib = inp.nextElementSibling;
-                            if (sib && clean(sib.innerText)) return {method:'input_attr_checked_sibling', text:clean(sib.innerText), html:sib.outerHTML};
-                        } catch(e){}
-                        return {method:'input_attr_checked', text:'sim', html:inp.outerHTML};
-                    }
+                    const id = inp.id || '';
+                    const name = inp.name || '';
+                    const checked_prop = !!inp.checked;
+                    const attr_checked = (inp.getAttribute('checked')||'')+'';
+                    const aria_checked = (inp.getAttribute('aria-checked')||'')+'';
+                    const disabled = !!inp.disabled;
+                    // find label local: label[for=id] within q, else closest label ancestor, else nextElementSibling label
+                    let label_el = null;
+                    try { if (id) label_el = q.querySelector("label[for='"+id+"']"); } catch(e){}
+                    try { if (!label_el) label_el = inp.closest('label'); } catch(e){}
+                    try { if (!label_el) { let s = inp.nextElementSibling; if (s && s.tagName && s.tagName.toLowerCase()==='label') label_el = s; } } catch(e){}
+                    let label_text = label_el ? clean(label_el.innerText) : '';
+                    let label_html = label_el ? label_el.outerHTML.slice(0,1000) : '';
+                    let label_class = label_el ? (label_el.className || '') : '';
+                    // computed styles (color/background) of label
+                    let label_style = {};
+                    try { if (label_el) { const cs = window.getComputedStyle(label_el); label_style.color = cs.color; label_style.background = cs.backgroundColor; label_style.fontWeight = cs.fontWeight; } } catch(e){}
+                    // also capture inner icons/html to detect svg/i markers
+                    let inner_html = '';
+                    try { inner_html = label_el ? label_el.innerHTML.slice(0,800) : ''; } catch(e){}
+                    options.push({
+                        id, name, checked_prop, attr_checked, aria_checked, disabled,
+                        label_text, label_class, label_html, label_style, inner_html
+                    });
                 } catch(e){}
             }
 
-            // 2) look for elements that look like option buttons and check active classes
-            const candidates = Array.from(n.querySelectorAll('button, label, .btn, .v-btn, .option, .radio, .choice, .option-item'));
-            if (candidates.length >= 1){
-                let textMap = [];
-                for (let c of candidates){
-                    try {
-                        const t = clean(c.innerText || c.textContent || '');
-                        textMap.push({el:c, text:t, cls:(c.className||'').toString().toLowerCase()});
-                    } catch(e){}
-                }
-                // find active one inside the container only
-                for (let it of textMap){
-                    if (!n.contains(it.el)) continue;
-                    if (it.cls.includes('active') || it.cls.includes('selected') || it.cls.includes('checked') || it.cls.includes('is-checked') || it.cls.includes('btn--active') || it.cls.includes('v-btn--is-active') || it.cls.includes('bg-primary') ){
-                        return {method:'class_active', text:it.text || 'sim', html:it.el.outerHTML};
-                    }
-                }
-                // if no active, but there are exactly two with 'sim' and 'não' texts, attempt icon-based detection within container
-                const simNao = textMap.filter(x => n.contains(x.el) && (x.text==='sim' || x.text==='não' || x.text==='nao' || x.text==='s' || x.text==='n'));
-                if (simNao.length === 2){
-                    for (let it of simNao){
-                        try {
-                            const icon = it.el.querySelector('i, svg, span');
-                            if (icon){
-                                const cls = (icon.className||'').toString().toLowerCase();
-                                if (cls.includes('checked') || cls.includes('selected') || cls.includes('ri-checkbox-circle-fill') || cls.includes('v-icon--active')) {
-                                    return {method:'icon_checked', text:it.text, html:it.el.outerHTML};
-                                }
-                            }
-                        } catch(e){}
-                    }
-                }
-            }
-
-            // 3) find explicit 'sim' or 'não' text nodes inside n
+            // group-level: find input[name]:checked in the document for each distinct name found
+            const group_checked = {};
             try {
-                const bodytxt = clean(n.innerText || n.textContent || '');
-                const m = bodytxt.match(/\b(sim|s|não|nao|n)\b/i);
-                if (m) return {method:'text_near', text:m[1].toLowerCase(), html:n.outerHTML};
+                const names = [...new Set(inputs.map(i => i.name).filter(n=>n))];
+                for (let nm of names){
+                    const sel = document.querySelector("input[name='"+nm+"']:checked");
+                    if (sel) group_checked[nm] = {id: sel.id || '', outerHTML: (sel.outerHTML||'').slice(0,600)};
+                }
             } catch(e){}
-        } catch(e){}
-        return null;
-    }
 
-    function findContainers(chave) {
-        const nodes = Array.from(document.querySelectorAll('div, section, fieldset, li, form, article, .question, .row, .form-group'));
-        const matches = [];
-        for (let n of nodes){
-            try {
-                if (!elementVisible(n)) continue;
-                const t = clean(n.innerText || n.textContent || '');
-                if (t && t.includes(chave)) matches.push(n);
-            } catch(e){}
-        }
-        return matches;
-    }
-
-    const results = {};
-    for (const chave in mapa){
-        try {
-            const containers = findContainers(chave);
-            let found = null;
-            for (let c of containers){
-                const d = detectInNode(c);
-                if (d){ found = d; break; }
-                // scan forward a few nodes in document order
-                let cur = c;
-                for (let i=0;i<40 && cur;i++){
-                    cur = nextNode(cur);
+            // also scan forward in document order within a small window for elements that indicate selection
+            function scan_forward(node, steps){
+                let cur = node;
+                let acc = [];
+                for (let i=0;i<steps;i++){
+                    if (!cur) break;
+                    if (cur.firstElementChild) cur = cur.firstElementChild;
+                    else {
+                        while (cur && !cur.nextElementSibling) cur = cur.parentElement;
+                        if (!cur) break;
+                        cur = cur.nextElementSibling;
+                    }
                     if (!cur) break;
                     try {
-                        if (!elementVisible(cur)) continue;
-                        const d2 = detectInNode(cur);
-                        if (d2){ found = d2; break; }
+                        const text = clean(cur.innerText||cur.textContent||'');
+                        if (text) acc.push({tag: cur.tagName, text: text.slice(0,200), outer: (cur.outerHTML||'').slice(0,400)});
                     } catch(e){}
                 }
-                if (found) break;
+                return acc;
             }
-            if (found) {
-                const txt = (found.text||'').toString().trim().toLowerCase();
-                let norm = found.text;
-                if (/^s($|im)/.test(txt)) norm = 'Sim';
-                else if (/^n($|ão|ao)/.test(txt)) norm = 'Não';
-                results[mapa[chave]] = {answer: norm, method: found.method, snippet: (found.html||'').slice(0,800)};
-            } else {
-                results[mapa[chave]] = {answer: null, method: 'not_found', snippet: '', debug: 'no containers matched or no markers'};
-            }
-        } catch(e){
-            results[mapa[chave]] = {answer: null, method: 'exception', snippet: '', debug: String(e)};
-        }
+
+            out.push({title, options, group_checked, forward_neighbors: scan_forward(q, 10)});
+        } catch(e){}
     }
-    return results;
+    return out;
     """
 
-    def run_js_context():
-        try:
-            return self.driver.execute_script(script_js, mapa) or {}
-        except Exception as e:
-            print("JS exec error:", e)
-            return {}
-
-    # 1) tenta no contexto atual
-    raw = run_js_context()
-
-    # 2) se vazio / tudo null, tenta em iframes
-    any_found = any((v and v.get('answer')) for v in raw.values()) if isinstance(raw, dict) else False
-    if not any_found:
-        try:
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-        except:
-            iframes = []
-        for f in iframes:
-            try:
-                self.driver.switch_to.frame(f)
-                time.sleep(0.15)
-                raw = run_js_context()
-                try:
-                    self.driver.switch_to.default_content()
-                except:
-                    pass
-                any_found = any((v and v.get('answer')) for v in raw.values()) if isinstance(raw, dict) else False
-                if any_found:
-                    break
-            except Exception:
-                try:
-                    self.driver.switch_to.default_content()
-                except:
-                    pass
-                continue
-
-    # Imprime o resultado cru para debug
-    print("\n--- RAW JS Questionário Results ---")
+    raw = []
     try:
-        import json
-        print(json.dumps(raw, ensure_ascii=False, indent=2) if raw else raw)
-    except Exception:
-        print(raw)
+        raw = self.driver.execute_script(script_collect)
+    except Exception as e:
+        print("Erro exec JS collect:", e)
+        raw = []
+
+    # Imprime RAW detalhado para você colar aqui
+    print("\n--- RAW PERGUNTAS DETALHADO ---")
+    print(json.dumps(raw, ensure_ascii=False, indent=2))
     print("--- END RAW ---\n")
 
-    # Normaliza e preenche saida compatível com COL_SPECS
+    # Heurística de decisão (prioritária)
     saida = {}
-    try:
-        respostas_agregadas = []
-        for pergunta_full, info in (raw or {}).items():
-            try:
-                resp = None
-                if isinstance(info, dict):
-                    resp = info.get('answer')
-                else:
-                    resp = info
-                if resp is None:
-                    continue
-                r = str(resp).strip()
-                if r.lower() in ('s', 'sim'):
-                    rnorm = 'Sim'
-                elif r.lower() in ('n', 'não', 'nao'):
-                    rnorm = 'Não'
-                else:
-                    rnorm = r.capitalize()
-                chave_norm = _norm_texto_chave(pergunta_full)
-                saida[chave_norm] = rnorm
-                respostas_agregadas.append(f"{pergunta_full} -> {rnorm}")
-                for p_schema in COL_SPECS:
-                    try:
-                        if p_schema.aba == 'Questionário' and p_schema.campo == pergunta_full:
-                            saida[p_schema.key] = rnorm
+    respostas_agregadas = []
+    for q in raw:
+        try:
+            pergunta = q.get('title') or ''
+            if not pergunta:
+                # tenta extrair a partir do texto primeiro das neighbors
+                pergunta = (q.get('forward_neighbors') and q['forward_neighbors'][0]['text']) or pergunta
+            escolhido = None
+            metodo = None
+
+            # 1) procura option com checked_prop True
+            for opt in q.get('options', []):
+                if opt.get('checked_prop'):
+                    escolhido = opt.get('label_text') or 'Sim'
+                    metodo = 'checked_prop'
+                    break
+
+            # 2) se não, procura group_checked (input[name]:checked)
+            if not escolhido:
+                gch = q.get('group_checked') or {}
+                if gch:
+                    # pega o primeiro id marcado no grupo e localiza na options
+                    for nm, info in gch.items():
+                        gid = info.get('id')
+                        if not gid: continue
+                        for opt in q.get('options', []):
+                            if opt.get('id') == gid:
+                                escolhido = opt.get('label_text') or 'Sim'
+                                metodo = 'group_checked'
+                                break
+                        if escolhido: break
+
+            # 3) se não, procura label_class contendo active/selected/is-checked
+            if not escolhido:
+                for opt in q.get('options', []):
+                    cls = (opt.get('label_class') or '').lower()
+                    if any(k in cls for k in ('active','selected','is-checked','checked','btn--active','v-btn--is-active','bg-primary','text-success')):
+                        escolhido = opt.get('label_text') or 'Sim'
+                        metodo = 'label_class'
+                        break
+
+            # 4) se não, procura ícone/svgs em inner_html com classes típicas de seleção
+            if not escolhido:
+                for opt in q.get('options', []):
+                    ih = (opt.get('inner_html') or '').lower()
+                    if any(tok in ih for tok in ('ri-checkbox-circle-fill','ri-checkbox-fill','checked','is-checked','v-icon--active','svg')):
+                        escolhido = opt.get('label_text') or 'Sim'
+                        metodo = 'icon_marker'
+                        break
+
+            # 5) se não, usa cor computada do label (ex.: verde bootstrap = rgb(13, 110, 53) ou similar)
+            if not escolhido:
+                for opt in q.get('options', []):
+                    style = opt.get('label_style') or {}
+                    color = (style.get('color') or '').lower()
+                    bg = (style.get('background') or '').lower()
+                    if color and ('rgb' in color and ('13, 110, 53' in color or 'green' in color or '0, 128, 0' in color)) or ('rgb' in bg and ('13, 110, 53' in bg or 'green' in bg)):
+                        escolhido = opt.get('label_text') or 'Sim'
+                        metodo = 'computed_color'
+                        break
+
+            # 6) fallback: se houver 2 opções e ambas com label_text 'Sim'/'Não', tenta decidir por presence of attr_checked or attr 'aria-checked'
+            if not escolhido:
+                opts = q.get('options', [])
+                if len(opts) >= 2:
+                    # procura attr_checked or aria_checked truthy
+                    for opt in opts:
+                        ac = (opt.get('attr_checked') or '').lower()
+                        ar = (opt.get('aria_checked') or '').lower()
+                        if ac and ac not in ('', 'null', 'false') or ar in ('true','checked','1','on'):
+                            escolhido = opt.get('label_text') or ('Sim' if 'sim' in (opt.get('label_text') or '').lower() else 'Não')
+                            metodo = 'attr_checked'
                             break
-                    except:
-                        continue
-            except Exception as e:
-                print("Erro normalizando item:", pergunta_full, e)
-        if respostas_agregadas:
-            saida['Respostas do Questionário'] = "\n".join(respostas_agregadas)
-    except Exception as e:
-        print("Erro ao montar saida:", e)
+                # se ainda nada, tenta fallback positional: procura label_text values and if first == 'Sim' else take actual texts
+                if not escolhido and len(opts) >= 2:
+                    lt0 = (opts[0].get('label_text') or '').lower()
+                    lt1 = (opts[1].get('label_text') or '').lower()
+                    if lt0 in ('sim','s') and lt1 in ('não','nao','n'):
+                        escolhido = 'Sim'
+                        metodo = 'positional'
+                    elif lt1 in ('sim','s') and lt0 in ('não','nao','n'):
+                        escolhido = 'Não'
+                        metodo = 'positional'
+                    else:
+                        # can't decide
+                        escolhido = opts[0].get('label_text') or None
+                        metodo = 'fallback_first'
 
-    # garante voltar do iframe
-    try:
-        self.driver.switch_to.default_content()
-    except:
-        pass
+            if escolhido:
+                # normaliza Sim/Não
+                r = escolhido.strip()
+                rl = r.lower()
+                if rl in ('s','sim'): rnorm = 'Sim'
+                elif rl in ('n','não','nao'): rnorm = 'Não'
+                else: rnorm = r.capitalize()
+                chave_norm = _norm_texto_chave(pergunta)
+                saida[chave_norm] = rnorm
+                respostas_agregadas.append(f"{pergunta} -> {rnorm} ({metodo})")
+            else:
+                # nada decidido
+                chave_norm = _norm_texto_chave(pergunta)
+                saida[chave_norm] = ''
+                respostas_agregadas.append(f"{pergunta} -> (não detectado)")
+        except Exception as e:
+            print("Erro normalizando pergunta:", e)
+            continue
 
+    if respostas_agregadas:
+        saida['Respostas do Questionário'] = "\n".join(respostas_agregadas)
     return saida
 
 # BOT TESTE
@@ -328,10 +231,9 @@ class BotTeste(HabibotBot):
                 time.sleep(1)
                 row[_col_key('Titular', 'Dados Gerais', 'Nome')] = extrator._extrair_por_label_simples('Nome')
                 row[_col_key('Titular', 'Dados Gerais', 'CPF/CNPJ')] = extrator._extrair_por_label_simples('CPF/CNPJ')
-            except:
-                pass
+            except: pass
 
-        print("   -> LENDO QUESTIONÁRIO (MÉTODO AVANÇADO COM DEBUG)...")
+        print("   -> LENDO QUESTIONÁRIO (INSPEÇÃO DETALHADA)...")
         ExtratorHabibot.extrair_questionario_mapa = nova_logica_questionario
         extrator = ExtratorHabibot(self.driver, self.wait, debug=self.debug, debug_visual=self.debug_visual)
         qmap = extrator.extrair_questionario_mapa() or {}
@@ -339,6 +241,6 @@ class BotTeste(HabibotBot):
         return row
 
 if __name__ == "__main__":
-    print("\n🚀 INICIANDO TESTE - LÓGICA AVANÇADA")
+    print("\n🚀 INICIANDO TESTE - INSPEÇÃO")
     bot = BotTeste()
     bot.executar(debug=True, debug_visual=True)
