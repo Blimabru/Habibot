@@ -1814,7 +1814,7 @@ class ExtratorHabibot:
         return dados
 
     def extrair_questionario_mapa(self) -> dict[str, str]:
-    """Extrai o questionário procurando, por cada div.question, o input marcado e seu label local.
+        """Extrai o questionário procurando, por cada div.question, o input marcado e seu label local.
 
     Estratégia determinística:
       - clica na aba Questionário
