@@ -1815,90 +1815,59 @@ class ExtratorHabibot:
         return dados
 
     def extrair_questionario_mapa(self) -> dict[str, str]:
-        """Extrai o questionário procurando, por cada div.question, o input marcado e seu label local.
-
-        Estratégia determinística:
-          - clica na aba Questionário
-          - espera curto (render)
-          - executa um script no browser que itera cada div.question e:
-              * pega heading (h6/h5/h4/label/text)
-              * procura input[type=radio|checkbox]:checked DENTRO do mesmo container
-              * se encontrado, tenta achar label[for=id] DENTRO do container (fallback: closest label, sibling, global)
-              * retorna lista de {heading, chosen: {id, value, label, method}, rawLabels}
-          - normaliza para 'Sim'/'Não' e preenche também as chaves do schema COL_SPECS
-        """
+        """Extrai o questionário de forma determinística via JS."""
         try:
             if not self.clicar_aba('Questionário'):
                 return {}
-            # pequena espera para a aba renderizar
-            time.sleep(0.6)
+            
+            # Pausa para garantir carregamento
+            time.sleep(1.0)
 
+            # Script JS Determinístico
             js = r"""
             const out = [];
             const questions = Array.from(document.querySelectorAll('div.question, .question'));
-            function textOf(el){ try { return (el && (el.innerText||el.textContent||'')).toString().trim(); } catch(e){ return ''; } }
+            
+            function textOf(el){ 
+                try { return (el && (el.innerText||el.textContent||'')).toString().trim(); } catch(e){ return ''; } 
+            }
+            
             for (const q of questions){
                 try {
+                    let heading = '';
                     const h = q.querySelector('h6,h5,h4,label');
-                    const heading = textOf(h) || textOf(q).split('\n')[0] || '';
+                    heading = textOf(h) || textOf(q).split('\n')[0] || '';
+                    
                     let chosen = null;
-                    // primeiro: input marcado dentro do container
                     let checked = q.querySelector("input[type='radio']:checked, input[type='checkbox']:checked");
-                    if (checked) {
-                        const id = checked.id || '';
-                        let label = null;
-                        if (id) label = q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']");
-                        if (!label) label = checked.closest('label');
-                        if (!label) {
-                            let sib = checked.nextElementSibling;
-                            if (sib && (sib.tagName||'').toLowerCase()==='label') label = sib;
-                        }
-                        chosen = { id: id, value: checked.value||'', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_checked' };
-                    } else {
-                        // fallback: procura inputs dentro do container cuja propriedade .checked seja true
-                        const inputs = Array.from(q.querySelectorAll("input[type='radio'], input[type='checkbox']"));
-                        for (const inp of inputs){
-                            try {
-                                if (inp.checked) {
-                                    const id = inp.id || '';
-                                    let label = id ? (q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']")) : null;
-                                    if (!label) label = inp.closest('label');
-                                    if (!label) { let s = inp.nextElementSibling; if (s && (s.tagName||'').toLowerCase()==='label') label = s; }
-                                    chosen = { id: id, value: inp.value||'', label: label ? textOf(label) : '', labelHTML: label ? label.outerHTML : '', method: 'inside_property_checked' };
-                                    break;
-                                }
-                            } catch(e){}
-                        }
-                        // se ainda nada, tentar input[name]:checked global com label pertencente ao mesmo question
-                        if (!chosen) {
-                            const names = [...new Set(Array.from(q.querySelectorAll("input")).map(i => i.name).filter(n=>n))];
-                            for (const nm of names){
-                                try {
-                                    const g = document.querySelector("input[name='"+nm+"']:checked");
-                                    if (g) {
-                                        const id = g.id || '';
-                                        let label = id ? (q.querySelector("label[for='"+id+"']") || document.querySelector("label[for='"+id+"']")) : null;
-                                        const ok = label && (q.contains(label) || (label.closest('.question') && label.closest('.question') === q));
-                                        if (ok) {
-                                            chosen = { id:id, value:g.value||'', label: textOf(label), labelHTML: label.outerHTML, method: 'global_checked_but_local_label' };
-                                            break;
-                                        } else if (id) {
-                                            // fallback: attach global label if exists
-                                            const labg = document.querySelector("label[for='"+id+"']");
-                                            if (labg) {
-                                                chosen = { id:id, value:g.value||'', label: textOf(labg), labelHTML: labg.outerHTML, method: 'global_checked_fallback' };
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } catch(e){}
-                            }
+                    
+                    if (!checked) {
+                        const inputs = q.querySelectorAll("input[type='radio'], input[type='checkbox']");
+                        for (const inp of inputs) {
+                            if (inp.checked) { checked = inp; break; }
                         }
                     }
 
-                    // coletar labels brutos (útil para debug/compat)
-                    const rawLabels = Array.from(q.querySelectorAll('label')).map(l => ({ text: textOf(l), html: (l.outerHTML||'').slice(0,400) }));
-                    out.push({ heading: heading, chosen: chosen, rawLabels: rawLabels });
+                    if (checked){
+                        const id = checked.id || '';
+                        let label = null;
+                        if (id) {
+                            label = q.querySelector("label[for='" + id + "']");
+                            if (!label) label = document.querySelector("label[for='" + id + "']");
+                        }
+                        if (!label) label = checked.closest('label');
+                        if (!label && checked.nextElementSibling && checked.nextElementSibling.tagName === 'LABEL') {
+                            label = checked.nextElementSibling;
+                        }
+
+                        chosen = {
+                            id: id, 
+                            value: checked.value || '', 
+                            label: label ? textOf(label) : '',
+                            method: 'dom_checked'
+                        };
+                    }
+                    out.push({ heading: heading, chosen: chosen });
                 } catch(e){}
             }
             return out;
@@ -1906,52 +1875,40 @@ class ExtratorHabibot:
 
             collected = []
             try:
-                collected = self.driver.execute_script(js) or []
+                collected = self.driver.execute_script(js)
             except Exception:
                 collected = []
 
             saida: dict[str, str] = {}
             respostas_agregadas = []
+
             for item in (collected or []):
-                try:
-                    heading = (item.get('heading') or '')[:1000]
-                    chosen = item.get('chosen') or {}
-                    resp_text = ''
-                    metodo = ''
-                    if chosen and chosen.get('label'):
-                        resp_text = chosen.get('label')
-                        metodo = chosen.get('method') or 'chosen_label'
-                    elif chosen and chosen.get('value'):
-                        resp_text = chosen.get('value')
-                        metodo = chosen.get('method') or 'chosen_value'
-                    else:
-                        resp_text = ''
-                        metodo = 'not_detected'
+                heading = item.get('heading') or ''
+                chosen = item.get('chosen')
+                
+                resp_text = ''
+                if chosen:
+                    if chosen.get('label'): resp_text = chosen.get('label')
+                    elif chosen.get('value'): resp_text = chosen.get('value')
+                
+                rnorm = ''
+                if resp_text:
+                    rl = resp_text.strip().lower()
+                    if rl in ('s', 'sim', 'true', '1', 'yes', 'on'): rnorm = 'Sim'
+                    elif rl in ('n', 'não', 'nao', 'false', '0', 'no', 'off'): rnorm = 'Não'
+                    else: rnorm = resp_text.strip().capitalize()
 
-                    rnorm = ''
-                    if resp_text:
-                        rl = resp_text.strip().lower()
-                        if rl in ('s', 'sim'):
-                            rnorm = 'Sim'
-                        elif rl in ('n', 'não', 'nao'):
-                            rnorm = 'Não'
-                        else:
-                            rnorm = resp_text.strip().capitalize()
-
-                    key_norm = _norm_texto_chave(heading)
-                    if key_norm:
-                        saida[key_norm] = rnorm
-                        respostas_agregadas.append(f"{heading} -> {rnorm} ({metodo})")
-                        # preenche também a chave do schema correspondente
-                        for p_schema in COL_SPECS:
-                            try:
-                                if p_schema.aba == 'Questionário' and p_schema.campo == heading:
-                                    saida[p_schema.key] = rnorm
-                                    break
-                            except:
-                                continue
-                except:
-                    continue
+                key_norm = _norm_texto_chave(heading)
+                if key_norm:
+                    # Preenche chaves do Schema para o Excel
+                    for p_schema in COL_SPECS:
+                        if p_schema.aba == 'Questionário':
+                            if p_schema.campo == heading or _norm_texto_chave(p_schema.campo) == key_norm:
+                                saida[p_schema.key] = rnorm
+                                break
+                    
+                    # Salva resumo para debug se necessário
+                    respostas_agregadas.append(f"{heading} -> {rnorm}")
 
             if respostas_agregadas:
                 saida['Respostas do Questionário'] = "\n".join(respostas_agregadas)
@@ -2612,38 +2569,30 @@ class HabibotBot:
         )
         row = {}
 
-        # 1) Titular (Loteamento, Dados Pessoais, Contato, CadÚnico, etc.)
-        # Já configuramos essa função para pegar só o essencial
+        # 1) Titular
         titular = extrator.extrair_titular_mapa() or {}
         row.update(titular)
 
-        # 2) Segundo Titular (Clica na aba, abre modal, pega dados)
+        # 2) Segundo Titular
         st = extrator.extrair_segundo_titular() or {}
         row.update(st)
 
-        # 3) Composição Familiar (Clica na aba, abre modal, pega dados)
+        # 3) Composição Familiar
         cf = extrator.extrair_composicao_familiar() or {}
         row.update(cf)
 
-        # 4) Renda (Clica na aba, abre modal)
+        # 4) Renda
         renda = extrator.extrair_renda() or {}
         row.update(renda)
 
-        # 5) Endereço (Clica na aba)
+        # 5) Endereço
         end = extrator.extrair_endereco() or {}
         row.update(end)
 
-        # 6) Questionário (Clica na aba, pega perguntas e respostas)
-        # Nota: Agora pega do jeito certo (bolinha marcada)
+        # 6) Questionário (CORRIGIDO)
+        # Agora pegamos o mapa completo e atualizamos a linha principal
         qmap = extrator.extrair_questionario_mapa() or {}
-        
-        # Joga para o Excel na coluna única 'Respostas do Questionário'
-        if 'Respostas do Questionário' in qmap:
-            key_quest = _col_key('Questionário', 'Perguntas', 'Respostas do Questionário')
-            row[key_quest] = qmap['Respostas do Questionário']
-
-        # --- REMOVIDO: Imóvel (Você não pediu na lista) ---
-        # --- REMOVIDO: Documentos (Você não pediu na lista) ---
+        row.update(qmap)
 
         return row
 
